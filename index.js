@@ -9,8 +9,14 @@
  *   - 齿孔：半径 d/2 的整圆，圆心落在邮票矩形边线上，按 pitch 间隔；边角圆形成四分之一孔
  *   - 内边距 = pitch：内容区四边各内缩 pitch → Cw=(nx-2)*pitch, Ch=(ny-2)*pitch
  *
- * 渲染顺序（利用合成模式一次成型，天然支持半透明导出）：
- *   1. 清空 → 2. 填内边距色 + 画照片(cover) → 3. destination-out 打孔 → 4. destination-over 铺外边距色
+ * 渲染顺序（离屏分层、自底向上合成，天然支持半透明导出）：
+ *   1. base 底色层（baseColor@baseOpacity）—— 最底层，齿孔镂空处透出它
+ *   2. sheet 外边距层（outerColor + outerImage cover，各自独立透明度）
+ *   3. stamp 邮票层（内边距填充 纯色/线性/径向渐变 + innerImage cover + 各格照片），叠入 deco
+ *   4. destination-out 在 deco 上打孔，穿透 sheet + stamp，露出底色 → 真实镂空
+ *   5. 合成到目标：先 base，再叠 deco
+ * 改用离屏分层（而非单次 destination-over）是为了让 outerOpacity/baseOpacity 保持均匀、
+ * 渐变在用户坐标系内渲染，并让齿孔能透出一个可控的底色层。
  */
 
 const DPR_LIMIT = 8;      // 预览缩放上限
