@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>邮票化小工具</title>
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="panel">
+      <h1>邮票化</h1>
+
+      <section class="group">
+        <button id="pickBtn" class="primary">选择图片</button>
+        <input type="file" id="fileInput" accept="image/*" hidden>
+        <p class="hint" id="imgInfo">未选择图片</p>
+      </section>
+
+      <section class="group">
+        <label>孔直径 (px)
+          <input type="number" id="holeD" value="8" min="1" step="1">
+        </label>
+        <label>孔间距 (px)
+          <input type="number" id="holeG" value="4" min="0" step="1">
+        </label>
+        <label>水平齿孔数
+          <input type="number" id="nx" value="20" min="3" step="1">
+        </label>
+        <label>垂直齿孔数
+          <input type="number" id="ny" value="14" min="3" step="1">
+        </label>
+      </section>
+
+      <section class="group">
+        <label>外边距背景色
+          <input type="color" id="outerColor" value="#000000">
+        </label>
+        <label>外边距透明度 <span id="outerOpacityVal">1.00</span>
+          <input type="range" id="outerOpacity" min="0" max="1" step="0.01" value="1">
+        </label>
+        <label>内边距背景色
+          <input type="color" id="innerColor" value="#d4af37">
+        </label>
+      </section>
+
+      <section class="group">
+        <label>导出倍率
+          <select id="exportScale">
+            <option value="1">1x</option>
+            <option value="2" selected>2x</option>
+            <option value="4">4x</option>
+          </select>
+        </label>
+        <button id="exportBtn" class="primary">导出 PNG</button>
+      </section>
+    </aside>
+
+    <main class="stage">
+      <div class="stage-bar">
+        <button id="viewToggle" class="ghost" type="button">1:1 视图</button>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="preview"></canvas>
+      </div>
+      <p class="hint stage-hint">拖拽平移照片 · 滚轮以光标为锚点缩放</p>
+    </main>
+  </div>
+
+  <script src="index.js"></script>
+</body>
+</html>

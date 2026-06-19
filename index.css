@@ -1,0 +1,156 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #1e1f22;
+  --panel: #2b2d31;
+  --line: #3a3d43;
+  --text: #e6e7ea;
+  --muted: #9a9da4;
+  --accent: #d4af37;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+/* ---- 控制面板 ---- */
+.panel {
+  width: 280px;
+  flex: none;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.panel h1 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 2px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.group:last-child { border-bottom: none; padding-bottom: 0; }
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+input[type="number"],
+select {
+  background: #1b1c1f;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 7px 9px;
+  font-size: 14px;
+}
+
+input[type="color"] {
+  width: 100%;
+  height: 34px;
+  background: #1b1c1f;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+button.primary {
+  background: var(--accent);
+  color: #2b2300;
+  border: none;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.primary:hover { filter: brightness(1.08); }
+
+.hint { font-size: 12px; color: var(--muted); }
+
+/* ---- 预览区 ---- */
+.stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  justify-content: safe center;
+  gap: 16px;
+  overflow: auto;
+  padding: 24px;
+}
+
+.stage-bar {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+button.ghost:hover { border-color: var(--muted); }
+button.ghost.active {
+  background: var(--accent);
+  color: #2b2300;
+  border-color: var(--accent);
+}
+
+.canvas-wrap {
+  /* 棋盘格，便于看清透明区域 */
+  background-color: #6e6e6e;
+  background-image:
+    linear-gradient(45deg, #555 25%, transparent 25%),
+    linear-gradient(-45deg, #555 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #555 75%),
+    linear-gradient(-45deg, transparent 75%, #555 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  border-radius: 4px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+#preview {
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+#preview:active { cursor: grabbing; }
+
+.stage-hint { text-align: center; }
+
+/* 拖放图片时的提示 */
+body.dragging .stage {
+  outline: 2px dashed var(--accent);
+  outline-offset: -12px;
+  background: rgba(212, 175, 55, 0.05);
+}
