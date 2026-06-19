@@ -15,10 +15,16 @@
 
       <section class="group">
         <h2 class="group-title">照片（最内）</h2>
-        <button id="pickBtn" class="primary">选择图片</button>
+        <button id="pickBtn" class="primary">选择图片（可多选）</button>
         <button id="clearBtn" class="ghost small">清空图片</button>
-        <input type="file" id="fileInput" accept="image/*" hidden>
+        <input type="file" id="fileInput" accept="image/*" multiple hidden>
         <p class="hint" id="imgInfo">未选择图片</p>
+        <label>列数 X
+          <input type="number" id="matrixX" value="1" min="1" step="1">
+        </label>
+        <label>行数 Y
+          <input type="number" id="matrixY" value="1" min="1" step="1">
+        </label>
       </section>
 
       <section class="group">

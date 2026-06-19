@@ -18,7 +18,7 @@ const ZOOM_STEP = 1.1;    // 每格滚轮缩放系数
 const MAX_PERF = 400;     // 齿孔数上限，防止超大图
 const MIN_PERF = 3;
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
-const PERSISTED = ['d', 'g', 'nx', 'ny', 'baseColor', 'baseOpacity',
+const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'baseColor', 'baseOpacity',
   'outerColor', 'outerOpacity', 'outerMargin',
   'innerColor', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
   'exportScale', 'view'];
@@ -28,6 +28,8 @@ const state = {
   g: 4,
   nx: 20,
   ny: 14,
+  matrixX: 1,                            // 矩阵列数
+  matrixY: 1,                            // 矩阵行数
   baseColor: '#000000',                  // 最底层底色：齿孔镂空处透出它
   baseOpacity: 1,                        // 底色透明度（调低可导出透明/半透明 PNG）
   outerColor: '#000000',
@@ -43,9 +45,17 @@ const state = {
   innerOriginY: 0.5,                     // 径向渐变原点 Y（0–1，相对邮票矩形高）
   exportScale: 2,
   view: 'fit',              // 'fit' 适应窗口 | 'actual' 1:1 实际像素
-  image: null,
-  crop: { scale: 1, offsetX: 0, offsetY: 0 }, // offset 单位为几何 px，相对内容区中心
+  images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
+  crop: { scale: 1, offsetX: 0, offsetY: 0 }, // offset 单位为几何 px，相对内容区中心（仅单图模式）
 };
+
+// 仅 1×1 且单图时启用拖拽/缩放裁剪
+function isSingleMode() {
+  return Math.round(state.matrixX) === 1 && Math.round(state.matrixY) === 1 && state.images.length === 1;
+}
+function singleImage() {
+  return isSingleMode() ? state.images[0] : null;
+}
 
 const canvas = document.getElementById('preview');
 const ctx = canvas.getContext('2d');
@@ -56,31 +66,46 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 function computeGeometry(s) {
   const pitch = s.d + s.g;
-  const Sw = s.nx * pitch;
+  const Sw = s.nx * pitch;            // 单张邮票
   const Sh = s.ny * pitch;
+  const X = Math.max(1, Math.round(s.matrixX));
+  const Y = Math.max(1, Math.round(s.matrixY));
+  const blockW = X * Sw;              // 整个矩阵块
+  const blockH = Y * Sh;
   const m = s.d / 2 + s.outerMargin * pitch;   // 外边距：半孔 + N 个 pitch
   const inner = pitch;        // 内边距
   return {
-    d: s.d, pitch, Sw, Sh,
-    W: Sw + 2 * m, H: Sh + 2 * m,
+    d: s.d, pitch, Sw, Sh, X, Y, blockW, blockH,
+    W: blockW + 2 * m, H: blockH + 2 * m,
     m, inner,
-    stampX: m, stampY: m,
-    contentX: m + inner, contentY: m + inner,
-    Cw: Sw - 2 * inner, Ch: Sh - 2 * inner,
+    blockX: m, blockY: m,
+    contentX: m + inner, contentY: m + inner,   // (0,0) 格内容区，供单图模式复用
+    Cw: Sw - 2 * inner, Ch: Sh - 2 * inner,     // 单格内容区尺寸
+  };
+}
+
+// 第 (c,r) 格的内容区矩形
+function cellContent(geo, c, r) {
+  return {
+    x: geo.m + c * geo.Sw + geo.inner,
+    y: geo.m + r * geo.Sh + geo.inner,
+    w: geo.Cw, h: geo.Ch,
   };
 }
 
 function holeCenters(geo) {
   const out = [];
-  const { m, pitch, Sw, Sh } = geo;
+  const { m, pitch, Sw, Sh, X, Y } = geo;
   const nx = state.nx, ny = state.ny;
-  for (let i = 0; i <= nx; i++) {           // 上/下边
-    out.push({ x: m + i * pitch, y: m });
-    out.push({ x: m + i * pitch, y: m + Sh });
+  const vTotal = Y * ny;     // 全高 = blockH / pitch
+  for (let c = 0; c <= X; c++) {            // 垂直齿孔线
+    const x = m + c * Sw;
+    for (let k = 0; k <= vTotal; k++) out.push({ x, y: m + k * pitch });
   }
-  for (let j = 1; j < ny; j++) {            // 左/右边（跳过已加的边角）
-    out.push({ x: m, y: m + j * pitch });
-    out.push({ x: m + Sw, y: m + j * pitch });
+  const hTotal = X * nx;     // 全宽 = blockW / pitch
+  for (let r = 0; r <= Y; r++) {            // 水平齿孔线
+    const y = m + r * Sh;
+    for (let k = 0; k <= hTotal; k++) out.push({ x: m + k * pitch, y });
   }
   return out;
 }
@@ -91,18 +116,17 @@ function coverBaseScale(geo, img) {
   return Math.max(geo.Cw / img.naturalWidth, geo.Ch / img.naturalHeight);
 }
 
-function imageDrawRect(s, geo) {
-  const img = s.image;
-  const eff = coverBaseScale(geo, img) * s.crop.scale;
+function imageDrawRect(img, geo) {
+  const eff = coverBaseScale(geo, img) * state.crop.scale;
   const w = img.naturalWidth * eff;
   const h = img.naturalHeight * eff;
-  const cx = geo.contentX + geo.Cw / 2 + s.crop.offsetX;
-  const cy = geo.contentY + geo.Ch / 2 + s.crop.offsetY;
+  const cx = geo.contentX + geo.Cw / 2 + state.crop.offsetX;
+  const cy = geo.contentY + geo.Ch / 2 + state.crop.offsetY;
   return { x: cx - w / 2, y: cy - h / 2, w, h };
 }
 
 function clampCrop() {
-  const img = state.image;
+  const img = singleImage();
   if (!img) return;
   const geo = computeGeometry(state);
   const eff = coverBaseScale(geo, img) * state.crop.scale;
@@ -123,24 +147,26 @@ function innerFillStyle(targetCtx, geo) {
     .map((st) => ({ pos: clamp(st.pos, 0, 1), color: st.color }))
     .sort((a, b) => a.pos - b.pos);
 
-  const cx = geo.stampX + geo.Sw / 2;
-  const cy = geo.stampY + geo.Sh / 2;
+  // 渐变横跨整个矩阵块（而非单张邮票）
+  const bx = geo.blockX, by = geo.blockY, bw = geo.blockW, bh = geo.blockH;
+  const cx = bx + bw / 2;
+  const cy = by + bh / 2;
   let grad;
   if (s.innerFill === 'radial') {
     // 原点由百分比指定，半径取到最远角点的距离以保证铺满
-    const ox = geo.stampX + geo.Sw * s.innerOriginX;
-    const oy = geo.stampY + geo.Sh * s.innerOriginY;
+    const ox = bx + bw * s.innerOriginX;
+    const oy = by + bh * s.innerOriginY;
     const r = Math.max(
-      Math.hypot(ox - geo.stampX, oy - geo.stampY),
-      Math.hypot(ox - (geo.stampX + geo.Sw), oy - geo.stampY),
-      Math.hypot(ox - geo.stampX, oy - (geo.stampY + geo.Sh)),
-      Math.hypot(ox - (geo.stampX + geo.Sw), oy - (geo.stampY + geo.Sh)),
+      Math.hypot(ox - bx, oy - by),
+      Math.hypot(ox - (bx + bw), oy - by),
+      Math.hypot(ox - bx, oy - (by + bh)),
+      Math.hypot(ox - (bx + bw), oy - (by + bh)),
     );
     grad = targetCtx.createRadialGradient(ox, oy, 0, ox, oy, r);
   } else {                       // linear
     const th = (s.innerAngle * Math.PI) / 180;
     const co = Math.cos(th), si = Math.sin(th);
-    const L = (Math.abs(geo.Sw * co) + Math.abs(geo.Sh * si)) / 2;
+    const L = (Math.abs(bw * co) + Math.abs(bh * si)) / 2;
     grad = targetCtx.createLinearGradient(cx - L * co, cy - L * si, cx + L * co, cy + L * si);
   }
   for (const st of stops) grad.addColorStop(st.pos, st.color);
@@ -192,20 +218,34 @@ function render(targetCtx, scale) {
   deco.globalAlpha = 1;
   deco.setTransform(scale, 0, 0, scale, 0, 0);          // 恢复几何坐标绘制邮票
 
+  // 内边距填充铺满整个矩阵块（渐变连续横跨全矩阵）
   deco.fillStyle = innerFillStyle(deco, geo);
-  deco.fillRect(geo.stampX, geo.stampY, geo.Sw, geo.Sh);
+  deco.fillRect(geo.blockX, geo.blockY, geo.blockW, geo.blockH);
   if (s.innerImage) {
     deco.save();
-    deco.beginPath(); deco.rect(geo.stampX, geo.stampY, geo.Sw, geo.Sh); deco.clip();
-    drawCover(deco, s.innerImage, geo.stampX, geo.stampY, geo.Sw, geo.Sh);
+    deco.beginPath(); deco.rect(geo.blockX, geo.blockY, geo.blockW, geo.blockH); deco.clip();
+    drawCover(deco, s.innerImage, geo.blockX, geo.blockY, geo.blockW, geo.blockH);
     deco.restore();
   }
-  if (s.image && geo.Cw > 0 && geo.Ch > 0) {
-    deco.save();
-    deco.beginPath(); deco.rect(geo.contentX, geo.contentY, geo.Cw, geo.Ch); deco.clip();
-    const r = imageDrawRect(s, geo);
-    deco.drawImage(s.image, r.x, r.y, r.w, r.h);
-    deco.restore();
+  // 各格照片：按行优先顺序重复填充
+  const imgs = s.images;
+  if (imgs.length && geo.Cw > 0 && geo.Ch > 0) {
+    const single = isSingleMode();
+    for (let r = 0; r < geo.Y; r++) {
+      for (let c = 0; c < geo.X; c++) {
+        const img = imgs[(r * geo.X + c) % imgs.length];
+        const cell = cellContent(geo, c, r);
+        deco.save();
+        deco.beginPath(); deco.rect(cell.x, cell.y, cell.w, cell.h); deco.clip();
+        if (single) {
+          const dr = imageDrawRect(img, geo);   // 单图模式：带拖拽/缩放裁剪
+          deco.drawImage(img, dr.x, dr.y, dr.w, dr.h);
+        } else {
+          drawCover(deco, img, cell.x, cell.y, cell.w, cell.h);
+        }
+        deco.restore();
+      }
+    }
   }
   // 打孔：穿透外边距层 + 邮票层 → 透明，露出底层底色（完整镂空）
   deco.globalCompositeOperation = 'destination-out';
@@ -244,7 +284,7 @@ function renderPreview() {
 /* ---------- 选图自动反推齿孔数 ---------- */
 
 function recomputePerfFromImage() {
-  const img = state.image;
+  const img = state.images[0];
   if (!img) return;
   const pitch = state.d + state.g;
   state.nx = clamp(Math.round(img.naturalWidth / pitch) + 2, MIN_PERF, MAX_PERF);
@@ -265,6 +305,8 @@ const els = {
   holeG: document.getElementById('holeG'),
   nx: document.getElementById('nx'),
   ny: document.getElementById('ny'),
+  matrixX: document.getElementById('matrixX'),
+  matrixY: document.getElementById('matrixY'),
   baseColor: document.getElementById('baseColor'),
   baseOpacity: document.getElementById('baseOpacity'),
   baseOpacityVal: document.getElementById('baseOpacityVal'),
@@ -310,6 +352,8 @@ function syncInputsFromState() {
   els.holeG.value = state.g;
   els.nx.value = state.nx;
   els.ny.value = state.ny;
+  els.matrixX.value = state.matrixX;
+  els.matrixY.value = state.matrixY;
   els.baseColor.value = state.baseColor;
   els.baseOpacity.value = state.baseOpacity;
   els.baseOpacityVal.textContent = Number(state.baseOpacity).toFixed(2);
@@ -410,22 +454,30 @@ function loadOptions() {
   } catch (_) { /* 读取失败时使用默认值 */ }
 }
 
-function loadImageFile(file) {
-  if (!file || !file.type.startsWith('image/')) return;
-  const img = new Image();
-  img.onload = () => {
-    state.image = img;
-    els.imgInfo.textContent = `${file.name} (${img.naturalWidth}×${img.naturalHeight})`;
+// 多图载入（多选 / 多文件拖放），按序存入 state.images
+function loadPhotos(fileList) {
+  const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'));
+  if (!files.length) return;
+  els.imgInfo.textContent = '加载中…';
+  Promise.all(files.map((f) => new Promise((res) => {
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(img.src); res(img); };
+    img.onerror = () => { URL.revokeObjectURL(img.src); res(null); };
+    img.src = URL.createObjectURL(f);
+  }))).then((imgs) => {
+    const ok = imgs.filter(Boolean);
+    if (!ok.length) { els.imgInfo.textContent = '图片加载失败'; return; }
+    state.images = ok;
+    els.imgInfo.textContent = ok.length === 1
+      ? `${files[0].name} (${ok[0].naturalWidth}×${ok[0].naturalHeight})`
+      : `${ok.length} 张图片`;
     recomputePerfFromImage();
     renderPreview();
-    URL.revokeObjectURL(img.src);
-  };
-  img.onerror = () => { els.imgInfo.textContent = '图片加载失败'; };
-  img.src = URL.createObjectURL(file);
+  });
 }
 
 function clearImage() {
-  state.image = null;
+  state.images = [];
   state.crop = { scale: 1, offsetX: 0, offsetY: 0 };
   els.fileInput.value = '';                       // 允许重新选择同一文件
   els.imgInfo.textContent = '未选择图片';
@@ -459,7 +511,7 @@ function bindBgImagePicker(pickBtn, clearBtn, fileInput, infoEl, key) {
 function bindControls() {
   els.pickBtn.addEventListener('click', () => els.fileInput.click());
   els.clearBtn.addEventListener('click', clearImage);
-  els.fileInput.addEventListener('change', (e) => loadImageFile(e.target.files && e.target.files[0]));
+  els.fileInput.addEventListener('change', (e) => loadPhotos(e.target.files));
   bindBgImagePicker(els.outerImgBtn, els.outerImgClear, els.outerImgInput, els.outerImgInfo, 'outerImage');
   bindBgImagePicker(els.innerImgBtn, els.innerImgClear, els.innerImgInput, els.innerImgInfo, 'innerImage');
 
@@ -478,6 +530,8 @@ function bindControls() {
   numField(els.holeG, 'g', 0);
   numField(els.nx, 'nx', MIN_PERF);
   numField(els.ny, 'ny', MIN_PERF);
+  numField(els.matrixX, 'matrixX', 1);
+  numField(els.matrixY, 'matrixY', 1);
   numField(els.outerMargin, 'outerMargin', 0);
 
   els.baseColor.addEventListener('input', () => { state.baseColor = els.baseColor.value; renderPreview(); saveOptions(); });
@@ -554,7 +608,7 @@ function bindCanvasInteractions() {
   let last = null;
 
   canvas.addEventListener('pointerdown', (e) => {
-    if (!state.image) return;
+    if (!isSingleMode()) return;
     dragging = true;
     last = { x: e.clientX, y: e.clientY };
     canvas.setPointerCapture(e.pointerId);
@@ -581,15 +635,15 @@ function bindCanvasInteractions() {
   canvas.addEventListener('pointercancel', endDrag);
 
   canvas.addEventListener('wheel', (e) => {
-    if (!state.image) return;
+    const img = singleImage();
+    if (!img) return;
     e.preventDefault();
     const geo = computeGeometry(state);
-    const img = state.image;
     const newScale = clamp(state.crop.scale * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), 1, 5);
     if (newScale === state.crop.scale) return;
 
     const base = coverBaseScale(geo, img);
-    const before = imageDrawRect(state, geo);
+    const before = imageDrawRect(img, geo);
     const effOld = base * state.crop.scale;
     const cursor = eventToGeo(e, geo);
     // 光标处对应的图片自身坐标
@@ -626,7 +680,7 @@ function bindDragDrop() {
   document.addEventListener('drop', (e) => {
     stop(e);
     document.body.classList.remove('dragging');
-    loadImageFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+    loadPhotos(e.dataTransfer.files);
   });
 }
 
