@@ -13,6 +13,7 @@
 
       <section class="group">
         <button id="pickBtn" class="primary">选择图片</button>
+        <button id="clearBtn" class="ghost small">清空图片</button>
         <input type="file" id="fileInput" accept="image/*" hidden>
         <p class="hint" id="imgInfo">未选择图片</p>
       </section>
@@ -39,9 +40,31 @@
         <label>外边距透明度 <span id="outerOpacityVal">1.00</span>
           <input type="range" id="outerOpacity" min="0" max="1" step="0.01" value="1">
         </label>
-        <label>内边距背景色
+        <label>内边距填充
+          <select id="innerFill">
+            <option value="solid" selected>纯色</option>
+            <option value="linear">线性渐变</option>
+            <option value="radial">径向渐变</option>
+          </select>
+        </label>
+        <label id="innerColorRow">内边距背景色
           <input type="color" id="innerColor" value="#d4af37">
         </label>
+        <div id="gradientControls" hidden>
+          <div id="stopsEditor"></div>
+          <button id="addStop" class="ghost small" type="button">+ 添加色档</button>
+          <label id="angleRow">渐变角度 <span id="innerAngleVal">90°</span>
+            <input type="range" id="innerAngle" min="0" max="360" step="1" value="90">
+          </label>
+          <div id="originRow" hidden>
+            <label>原点 X <span id="originXVal">0.50</span>
+              <input type="range" id="originX" min="0" max="1" step="0.01" value="0.5">
+            </label>
+            <label>原点 Y <span id="originYVal">0.50</span>
+              <input type="range" id="originY" min="0" max="1" step="0.01" value="0.5">
+            </label>
+          </div>
+        </div>
       </section>
 
       <section class="group">

@@ -18,7 +18,9 @@ const ZOOM_STEP = 1.1;    // 每格滚轮缩放系数
 const MAX_PERF = 400;     // 齿孔数上限，防止超大图
 const MIN_PERF = 3;
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
-const PERSISTED = ['d', 'g', 'nx', 'ny', 'outerColor', 'outerOpacity', 'innerColor', 'exportScale', 'view'];
+const PERSISTED = ['d', 'g', 'nx', 'ny', 'outerColor', 'outerOpacity',
+  'innerColor', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
+  'exportScale', 'view'];
 
 const state = {
   d: 8,
@@ -27,7 +29,12 @@ const state = {
   ny: 14,
   outerColor: '#000000',
   outerOpacity: 1,
-  innerColor: '#d4af37',
+  innerColor: '#d4af37',                 // 纯色模式用色
+  innerFill: 'solid',                    // 'solid' | 'linear' | 'radial'
+  innerStops: [{ pos: 0, color: '#f0d979' }, { pos: 1, color: '#a67c1a' }],
+  innerAngle: 90,                        // 线性渐变角度（度）
+  innerOriginX: 0.5,                     // 径向渐变原点 X（0–1，相对邮票矩形宽）
+  innerOriginY: 0.5,                     // 径向渐变原点 Y（0–1，相对邮票矩形高）
   exportScale: 2,
   view: 'fit',              // 'fit' 适应窗口 | 'actual' 1:1 实际像素
   image: null,
@@ -99,6 +106,41 @@ function clampCrop() {
   state.crop.offsetY = clamp(state.crop.offsetY, -oy, oy);
 }
 
+/* ---------- 内边距填充（纯色 / 线性 / 径向渐变） ---------- */
+
+function innerFillStyle(targetCtx, geo) {
+  const s = state;
+  if (s.innerFill === 'solid' || !Array.isArray(s.innerStops) || s.innerStops.length === 0) {
+    return s.innerColor;
+  }
+  const stops = s.innerStops
+    .map((st) => ({ pos: clamp(st.pos, 0, 1), color: st.color }))
+    .sort((a, b) => a.pos - b.pos);
+
+  const cx = geo.stampX + geo.Sw / 2;
+  const cy = geo.stampY + geo.Sh / 2;
+  let grad;
+  if (s.innerFill === 'radial') {
+    // 原点由百分比指定，半径取到最远角点的距离以保证铺满
+    const ox = geo.stampX + geo.Sw * s.innerOriginX;
+    const oy = geo.stampY + geo.Sh * s.innerOriginY;
+    const r = Math.max(
+      Math.hypot(ox - geo.stampX, oy - geo.stampY),
+      Math.hypot(ox - (geo.stampX + geo.Sw), oy - geo.stampY),
+      Math.hypot(ox - geo.stampX, oy - (geo.stampY + geo.Sh)),
+      Math.hypot(ox - (geo.stampX + geo.Sw), oy - (geo.stampY + geo.Sh)),
+    );
+    grad = targetCtx.createRadialGradient(ox, oy, 0, ox, oy, r);
+  } else {                       // linear
+    const th = (s.innerAngle * Math.PI) / 180;
+    const co = Math.cos(th), si = Math.sin(th);
+    const L = (Math.abs(geo.Sw * co) + Math.abs(geo.Sh * si)) / 2;
+    grad = targetCtx.createLinearGradient(cx - L * co, cy - L * si, cx + L * co, cy + L * si);
+  }
+  for (const st of stops) grad.addColorStop(st.pos, st.color);
+  return grad;
+}
+
 /* ---------- 渲染 ---------- */
 
 function render(targetCtx, scale) {
@@ -113,8 +155,8 @@ function render(targetCtx, scale) {
   targetCtx.globalCompositeOperation = 'source-over';
   targetCtx.clearRect(0, 0, geo.W, geo.H);
 
-  // 2. 邮票主体：内边距色 + 照片
-  targetCtx.fillStyle = s.innerColor;
+  // 2. 邮票主体：内边距色（纯色/渐变） + 照片
+  targetCtx.fillStyle = innerFillStyle(targetCtx, geo);
   targetCtx.fillRect(geo.stampX, geo.stampY, geo.Sw, geo.Sh);
 
   if (s.image && geo.Cw > 0 && geo.Ch > 0) {
@@ -178,6 +220,7 @@ function recomputePerfFromImage() {
 const els = {
   fileInput: document.getElementById('fileInput'),
   pickBtn: document.getElementById('pickBtn'),
+  clearBtn: document.getElementById('clearBtn'),
   imgInfo: document.getElementById('imgInfo'),
   holeD: document.getElementById('holeD'),
   holeG: document.getElementById('holeG'),
@@ -187,6 +230,19 @@ const els = {
   outerOpacity: document.getElementById('outerOpacity'),
   outerOpacityVal: document.getElementById('outerOpacityVal'),
   innerColor: document.getElementById('innerColor'),
+  innerColorRow: document.getElementById('innerColorRow'),
+  innerFill: document.getElementById('innerFill'),
+  gradientControls: document.getElementById('gradientControls'),
+  stopsEditor: document.getElementById('stopsEditor'),
+  addStop: document.getElementById('addStop'),
+  angleRow: document.getElementById('angleRow'),
+  innerAngle: document.getElementById('innerAngle'),
+  innerAngleVal: document.getElementById('innerAngleVal'),
+  originRow: document.getElementById('originRow'),
+  originX: document.getElementById('originX'),
+  originY: document.getElementById('originY'),
+  originXVal: document.getElementById('originXVal'),
+  originYVal: document.getElementById('originYVal'),
   exportScale: document.getElementById('exportScale'),
   exportBtn: document.getElementById('exportBtn'),
   viewToggle: document.getElementById('viewToggle'),
@@ -201,9 +257,74 @@ function syncInputsFromState() {
   els.outerOpacity.value = state.outerOpacity;
   els.outerOpacityVal.textContent = Number(state.outerOpacity).toFixed(2);
   els.innerColor.value = state.innerColor;
+  els.innerFill.value = state.innerFill;
+  els.innerAngle.value = state.innerAngle;
+  els.innerAngleVal.textContent = `${state.innerAngle}°`;
+  els.originX.value = state.innerOriginX;
+  els.originY.value = state.innerOriginY;
+  els.originXVal.textContent = state.innerOriginX.toFixed(2);
+  els.originYVal.textContent = state.innerOriginY.toFixed(2);
   els.exportScale.value = String(state.exportScale);
   els.viewToggle.textContent = state.view === 'fit' ? '1:1 视图' : '适应窗口';
   els.viewToggle.classList.toggle('active', state.view === 'actual');
+  renderStopsEditor();
+  updateInnerControlsVisibility();
+}
+
+/* ---------- 内边距渐变控件 ---------- */
+
+function updateInnerControlsVisibility() {
+  const mode = state.innerFill;
+  els.innerColorRow.hidden = mode !== 'solid';
+  els.gradientControls.hidden = mode === 'solid';
+  els.angleRow.hidden = mode !== 'linear';     // 角度仅线性渐变有意义
+  els.originRow.hidden = mode !== 'radial';     // 原点仅径向渐变有意义
+}
+
+function renderStopsEditor() {
+  const editor = els.stopsEditor;
+  editor.textContent = '';
+  state.innerStops.forEach((stop, i) => {
+    const row = document.createElement('div');
+    row.className = 'stop-row';
+
+    const color = document.createElement('input');
+    color.type = 'color';
+    color.value = stop.color;
+    color.addEventListener('input', () => {
+      state.innerStops[i].color = color.value;
+      renderPreview();
+      saveOptions();
+    });
+
+    const pos = document.createElement('input');
+    pos.type = 'range';
+    pos.min = '0';
+    pos.max = '100';
+    pos.step = '1';
+    pos.value = String(Math.round(stop.pos * 100));
+    pos.addEventListener('input', () => {
+      state.innerStops[i].pos = parseInt(pos.value, 10) / 100;
+      renderPreview();
+      saveOptions();
+    });
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'stop-del';
+    del.textContent = '✕';
+    del.disabled = state.innerStops.length <= 1;   // 至少保留 1 档
+    del.addEventListener('click', () => {
+      if (state.innerStops.length <= 1) return;
+      state.innerStops.splice(i, 1);
+      renderStopsEditor();
+      renderPreview();
+      saveOptions();
+    });
+
+    row.append(color, pos, del);
+    editor.appendChild(row);
+  });
 }
 
 /* ---------- 选项持久化（localStorage） ---------- */
@@ -241,8 +362,17 @@ function loadImageFile(file) {
   img.src = URL.createObjectURL(file);
 }
 
+function clearImage() {
+  state.image = null;
+  state.crop = { scale: 1, offsetX: 0, offsetY: 0 };
+  els.fileInput.value = '';                       // 允许重新选择同一文件
+  els.imgInfo.textContent = '未选择图片';
+  renderPreview();
+}
+
 function bindControls() {
   els.pickBtn.addEventListener('click', () => els.fileInput.click());
+  els.clearBtn.addEventListener('click', clearImage);
   els.fileInput.addEventListener('change', (e) => loadImageFile(e.target.files && e.target.files[0]));
 
   const numField = (el, key, lo) => {
@@ -262,6 +392,38 @@ function bindControls() {
 
   els.outerColor.addEventListener('input', () => { state.outerColor = els.outerColor.value; renderPreview(); saveOptions(); });
   els.innerColor.addEventListener('input', () => { state.innerColor = els.innerColor.value; renderPreview(); saveOptions(); });
+
+  els.innerFill.addEventListener('change', () => {
+    state.innerFill = els.innerFill.value;
+    updateInnerControlsVisibility();
+    renderPreview();
+    saveOptions();
+  });
+  els.addStop.addEventListener('click', () => {
+    const last = state.innerStops[state.innerStops.length - 1];
+    state.innerStops.push({ pos: 1, color: last ? last.color : '#ffffff' });
+    renderStopsEditor();
+    renderPreview();
+    saveOptions();
+  });
+  els.innerAngle.addEventListener('input', () => {
+    state.innerAngle = parseInt(els.innerAngle.value, 10);
+    els.innerAngleVal.textContent = `${state.innerAngle}°`;
+    renderPreview();
+    saveOptions();
+  });
+  els.originX.addEventListener('input', () => {
+    state.innerOriginX = parseFloat(els.originX.value);
+    els.originXVal.textContent = state.innerOriginX.toFixed(2);
+    renderPreview();
+    saveOptions();
+  });
+  els.originY.addEventListener('input', () => {
+    state.innerOriginY = parseFloat(els.originY.value);
+    els.originYVal.textContent = state.innerOriginY.toFixed(2);
+    renderPreview();
+    saveOptions();
+  });
   els.outerOpacity.addEventListener('input', () => {
     state.outerOpacity = parseFloat(els.outerOpacity.value);
     els.outerOpacityVal.textContent = state.outerOpacity.toFixed(2);
