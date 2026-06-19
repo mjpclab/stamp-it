@@ -66,6 +66,15 @@ label {
   color: var(--muted);
 }
 
+.field-row {
+  display: flex;
+  gap: 12px;
+}
+.field-row > label {
+  flex: 1;
+  min-width: 0;
+}
+
 input[type="number"],
 select {
   background: #1b1c1f;

@@ -15,12 +15,11 @@
 
 const DPR_LIMIT = 8;      // 预览缩放上限
 const ZOOM_STEP = 1.1;    // 每格滚轮缩放系数
-const MAX_PERF = 400;     // 齿孔数上限，防止超大图
-const MIN_PERF = 3;
+const MIN_PERF = 3;       // 齿孔数下限
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
 const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'baseColor', 'baseOpacity',
-  'outerColor', 'outerOpacity', 'outerMargin',
-  'innerColor', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
+  'outerColor', 'outerColorOpacity', 'outerImageOpacity', 'outerMargin',
+  'innerColor', 'innerColorOpacity', 'innerImageOpacity', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
   'exportScale', 'view'];
 
 const state = {
@@ -33,11 +32,14 @@ const state = {
   baseColor: '#000000',                  // 最底层底色：齿孔镂空处透出它
   baseOpacity: 1,                        // 底色透明度（调低可导出透明/半透明 PNG）
   outerColor: '#000000',
-  outerOpacity: 0,                       // 默认 0：非小型张时外边距透明，露出底色
+  outerColorOpacity: 0,                  // 外边距背景色透明度（默认 0：露出底色）
+  outerImageOpacity: 1,                  // 外边距背景图透明度
   outerMargin: 0,                        // 外边距步进：0=半孔，每+1 增加一个 pitch
   outerImage: null,                      // 外边距背景图（session 态，不持久化）
   innerImage: null,                      // 内边距背景图（session 态，不持久化）
   innerColor: '#d4af37',                 // 纯色模式用色
+  innerColorOpacity: 1,                  // 内边距背景色/渐变透明度（不含照片）
+  innerImageOpacity: 1,                  // 内边距背景图透明度
   innerFill: 'solid',                    // 'solid' | 'linear' | 'radial'
   innerStops: [{ pos: 0, color: '#f0d979' }, { pos: 1, color: '#a67c1a' }],
   innerAngle: 90,                        // 线性渐变角度（度）
@@ -46,15 +48,14 @@ const state = {
   exportScale: 2,
   view: 'fit',              // 'fit' 适应窗口 | 'actual' 1:1 实际像素
   images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
-  crop: { scale: 1, offsetX: 0, offsetY: 0 }, // offset 单位为几何 px，相对内容区中心（仅单图模式）
+  crops: {},                // 每格独立裁剪：键 "c,r" → {scale, offsetX, offsetY}（session 态）
 };
 
-// 仅 1×1 且单图时启用拖拽/缩放裁剪
-function isSingleMode() {
-  return Math.round(state.matrixX) === 1 && Math.round(state.matrixY) === 1 && state.images.length === 1;
-}
-function singleImage() {
-  return isSingleMode() ? state.images[0] : null;
+const IDENTITY_CROP = { scale: 1, offsetX: 0, offsetY: 0 };
+function getCrop(c, r) { return state.crops[c + ',' + r] || IDENTITY_CROP; }   // 只读，缺省返回共享单位裁剪
+function cellCrop(c, r) {                                                       // 取（并按需创建）可编辑的格裁剪
+  const k = c + ',' + r;
+  return state.crops[k] || (state.crops[k] = { scale: 1, offsetX: 0, offsetY: 0 });
 }
 
 const canvas = document.getElementById('preview');
@@ -112,28 +113,43 @@ function holeCenters(geo) {
 
 /* ---------- 照片 cover 裁剪 ---------- */
 
-function coverBaseScale(geo, img) {
-  return Math.max(geo.Cw / img.naturalWidth, geo.Ch / img.naturalHeight);
+function coverScale(img, cw, ch) {
+  return Math.max(cw / img.naturalWidth, ch / img.naturalHeight);
 }
 
-function imageDrawRect(img, geo) {
-  const eff = coverBaseScale(geo, img) * state.crop.scale;
+// 把 img 以 cover + 指定 crop（scale/offset，offset 相对内容区中心）绘入内容矩形 content={x,y,w,h}
+function imageDrawRect(img, content, crop) {
+  const eff = coverScale(img, content.w, content.h) * crop.scale;
   const w = img.naturalWidth * eff;
   const h = img.naturalHeight * eff;
-  const cx = geo.contentX + geo.Cw / 2 + state.crop.offsetX;
-  const cy = geo.contentY + geo.Ch / 2 + state.crop.offsetY;
+  const cx = content.x + content.w / 2 + crop.offsetX;
+  const cy = content.y + content.h / 2 + crop.offsetY;
   return { x: cx - w / 2, y: cy - h / 2, w, h };
 }
 
-function clampCrop() {
-  const img = singleImage();
-  if (!img) return;
+// 钳制单格 crop 的 offset：保证该格图片铺满内容区
+function clampCropCell(c, r) {
+  if (!state.images.length) return;
   const geo = computeGeometry(state);
-  const eff = coverBaseScale(geo, img) * state.crop.scale;
+  const img = state.images[(r * geo.X + c) % state.images.length];
+  if (!img) return;
+  const crop = cellCrop(c, r);
+  const eff = coverScale(img, geo.Cw, geo.Ch) * crop.scale;
   const ox = Math.max(0, (img.naturalWidth * eff - geo.Cw) / 2);
   const oy = Math.max(0, (img.naturalHeight * eff - geo.Ch) / 2);
-  state.crop.offsetX = clamp(state.crop.offsetX, -ox, ox);
-  state.crop.offsetY = clamp(state.crop.offsetY, -oy, oy);
+  crop.offsetX = clamp(crop.offsetX, -ox, ox);
+  crop.offsetY = clamp(crop.offsetY, -oy, oy);
+}
+
+// 几何变化后重新钳制所有已编辑过的格
+function clampAllCrops() {
+  const X = Math.max(1, Math.round(state.matrixX));
+  const Y = Math.max(1, Math.round(state.matrixY));
+  for (let r = 0; r < Y; r++) {
+    for (let c = 0; c < X; c++) {
+      if (state.crops[c + ',' + r]) clampCropCell(c, r);
+    }
+  }
 }
 
 /* ---------- 内边距填充（纯色 / 线性 / 径向渐变） ---------- */
@@ -199,50 +215,53 @@ function render(targetCtx, scale) {
   cv.width = Math.max(1, Math.round(geo.W * scale));
   cv.height = Math.max(1, Math.round(geo.H * scale));
 
-  // --- 外边距层 sheet（不透明：外色 + 外背景图 cover），随后整体按 outerOpacity 叠加 ---
+  // --- 外边距层 sheet：外色(@outerColorOpacity) + 外背景图 cover(@outerImageOpacity) 各自独立透明度 ---
   const sheet = layerCanvas(geo, scale);
+  sheet.globalAlpha = s.outerColorOpacity;
   sheet.fillStyle = s.outerColor;
   sheet.fillRect(0, 0, geo.W, geo.H);
+  sheet.globalAlpha = 1;
   if (s.outerImage) {
     sheet.save();
+    sheet.globalAlpha = s.outerImageOpacity;
     sheet.beginPath(); sheet.rect(0, 0, geo.W, geo.H); sheet.clip();
     drawCover(sheet, s.outerImage, 0, 0, geo.W, geo.H);
     sheet.restore();
   }
 
-  // --- 装饰层 deco = 外边距层(@outerOpacity) + 邮票层，最后一并打孔 ---
+  // --- 装饰层 deco = 外边距层 + 邮票层，最后一并打孔 ---
   const deco = layerCanvas(geo, scale);
   deco.setTransform(1, 0, 0, 1, 0, 0);                 // 先以设备像素叠入 sheet
-  deco.globalAlpha = s.outerOpacity;
   deco.drawImage(sheet.canvas, 0, 0);
-  deco.globalAlpha = 1;
   deco.setTransform(scale, 0, 0, scale, 0, 0);          // 恢复几何坐标绘制邮票
 
-  // 内边距填充铺满整个矩阵块（渐变连续横跨全矩阵）
-  deco.fillStyle = innerFillStyle(deco, geo);
-  deco.fillRect(geo.blockX, geo.blockY, geo.blockW, geo.blockH);
+  // 内边距层：背景色/渐变(@innerColorOpacity) + 背景图 cover(@innerImageOpacity) 各自独立透明度
+  const inner = layerCanvas(geo, scale);
+  inner.globalAlpha = s.innerColorOpacity;
+  inner.fillStyle = innerFillStyle(inner, geo);
+  inner.fillRect(geo.blockX, geo.blockY, geo.blockW, geo.blockH);
+  inner.globalAlpha = 1;
   if (s.innerImage) {
-    deco.save();
-    deco.beginPath(); deco.rect(geo.blockX, geo.blockY, geo.blockW, geo.blockH); deco.clip();
-    drawCover(deco, s.innerImage, geo.blockX, geo.blockY, geo.blockW, geo.blockH);
-    deco.restore();
+    inner.save();
+    inner.globalAlpha = s.innerImageOpacity;
+    inner.beginPath(); inner.rect(geo.blockX, geo.blockY, geo.blockW, geo.blockH); inner.clip();
+    drawCover(inner, s.innerImage, geo.blockX, geo.blockY, geo.blockW, geo.blockH);
+    inner.restore();
   }
+  deco.setTransform(1, 0, 0, 1, 0, 0);                 // 以设备像素叠入内边距层
+  deco.drawImage(inner.canvas, 0, 0);
+  deco.setTransform(scale, 0, 0, scale, 0, 0);          // 恢复几何坐标绘制照片
   // 各格照片：按行优先顺序重复填充
   const imgs = s.images;
   if (imgs.length && geo.Cw > 0 && geo.Ch > 0) {
-    const single = isSingleMode();
     for (let r = 0; r < geo.Y; r++) {
       for (let c = 0; c < geo.X; c++) {
         const img = imgs[(r * geo.X + c) % imgs.length];
         const cell = cellContent(geo, c, r);
         deco.save();
         deco.beginPath(); deco.rect(cell.x, cell.y, cell.w, cell.h); deco.clip();
-        if (single) {
-          const dr = imageDrawRect(img, geo);   // 单图模式：带拖拽/缩放裁剪
-          deco.drawImage(img, dr.x, dr.y, dr.w, dr.h);
-        } else {
-          drawCover(deco, img, cell.x, cell.y, cell.w, cell.h);
-        }
+        const dr = imageDrawRect(img, cell, getCrop(c, r));   // 每格独立 cover + 裁剪
+        deco.drawImage(img, dr.x, dr.y, dr.w, dr.h);
         deco.restore();
       }
     }
@@ -271,27 +290,15 @@ function render(targetCtx, scale) {
 
 function previewScale(geo) {
   if (state.view === 'actual') return 1;     // 1:1 实际几何像素
-  const availW = window.innerWidth - 280 - 80;
-  const availH = window.innerHeight - 140;
-  return clamp(Math.min(availW / geo.W, availH / geo.H), 0.25, DPR_LIMIT);
+  const availW = Math.max(50, window.innerWidth - 280 - 80);
+  const availH = Math.max(50, window.innerHeight - 140);
+  // 适应窗口：始终缩放到可视区域内（不设下限，避免大尺寸出现滚动条），仅限制放大上限
+  return Math.min(Math.min(availW / geo.W, availH / geo.H), DPR_LIMIT);
 }
 
 function renderPreview() {
   const geo = computeGeometry(state);
   render(ctx, previewScale(geo));
-}
-
-/* ---------- 选图自动反推齿孔数 ---------- */
-
-function recomputePerfFromImage() {
-  const img = state.images[0];
-  if (!img) return;
-  const pitch = state.d + state.g;
-  state.nx = clamp(Math.round(img.naturalWidth / pitch) + 2, MIN_PERF, MAX_PERF);
-  state.ny = clamp(Math.round(img.naturalHeight / pitch) + 2, MIN_PERF, MAX_PERF);
-  state.crop = { scale: 1, offsetX: 0, offsetY: 0 };
-  syncInputsFromState();
-  saveOptions();
 }
 
 /* ---------- 控件 ---------- */
@@ -311,8 +318,10 @@ const els = {
   baseOpacity: document.getElementById('baseOpacity'),
   baseOpacityVal: document.getElementById('baseOpacityVal'),
   outerColor: document.getElementById('outerColor'),
-  outerOpacity: document.getElementById('outerOpacity'),
-  outerOpacityVal: document.getElementById('outerOpacityVal'),
+  outerColorOpacity: document.getElementById('outerColorOpacity'),
+  outerColorOpacityVal: document.getElementById('outerColorOpacityVal'),
+  outerImageOpacity: document.getElementById('outerImageOpacity'),
+  outerImageOpacityVal: document.getElementById('outerImageOpacityVal'),
   outerMargin: document.getElementById('outerMargin'),
   outerMarginHint: document.getElementById('outerMarginHint'),
   outerImgBtn: document.getElementById('outerImgBtn'),
@@ -325,6 +334,10 @@ const els = {
   innerImgInfo: document.getElementById('innerImgInfo'),
   innerColor: document.getElementById('innerColor'),
   innerColorRow: document.getElementById('innerColorRow'),
+  innerColorOpacity: document.getElementById('innerColorOpacity'),
+  innerColorOpacityVal: document.getElementById('innerColorOpacityVal'),
+  innerImageOpacity: document.getElementById('innerImageOpacity'),
+  innerImageOpacityVal: document.getElementById('innerImageOpacityVal'),
   innerFill: document.getElementById('innerFill'),
   gradientControls: document.getElementById('gradientControls'),
   stopsEditor: document.getElementById('stopsEditor'),
@@ -358,11 +371,17 @@ function syncInputsFromState() {
   els.baseOpacity.value = state.baseOpacity;
   els.baseOpacityVal.textContent = Number(state.baseOpacity).toFixed(2);
   els.outerColor.value = state.outerColor;
-  els.outerOpacity.value = state.outerOpacity;
-  els.outerOpacityVal.textContent = Number(state.outerOpacity).toFixed(2);
+  els.outerColorOpacity.value = state.outerColorOpacity;
+  els.outerColorOpacityVal.textContent = Number(state.outerColorOpacity).toFixed(2);
+  els.outerImageOpacity.value = state.outerImageOpacity;
+  els.outerImageOpacityVal.textContent = Number(state.outerImageOpacity).toFixed(2);
   els.outerMargin.value = state.outerMargin;
   updateOuterMarginHint();
   els.innerColor.value = state.innerColor;
+  els.innerColorOpacity.value = state.innerColorOpacity;
+  els.innerColorOpacityVal.textContent = Number(state.innerColorOpacity).toFixed(2);
+  els.innerImageOpacity.value = state.innerImageOpacity;
+  els.innerImageOpacityVal.textContent = Number(state.innerImageOpacity).toFixed(2);
   els.innerFill.value = state.innerFill;
   els.innerAngle.value = state.innerAngle;
   els.innerAngleVal.textContent = `${state.innerAngle}°`;
@@ -471,14 +490,14 @@ function loadPhotos(fileList) {
     els.imgInfo.textContent = ok.length === 1
       ? `${files[0].name} (${ok[0].naturalWidth}×${ok[0].naturalHeight})`
       : `${ok.length} 张图片`;
-    recomputePerfFromImage();
+    state.crops = {};   // 新图重置所有裁剪；齿孔数由用户手动调整
     renderPreview();
   });
 }
 
 function clearImage() {
   state.images = [];
-  state.crop = { scale: 1, offsetX: 0, offsetY: 0 };
+  state.crops = {};
   els.fileInput.value = '';                       // 允许重新选择同一文件
   els.imgInfo.textContent = '未选择图片';
   renderPreview();
@@ -520,7 +539,7 @@ function bindControls() {
       const v = parseFloat(el.value);
       if (Number.isNaN(v)) return;
       state[key] = Math.max(lo, v);
-      clampCrop();
+      clampAllCrops();
       updateOuterMarginHint();
       renderPreview();
       saveOptions();
@@ -543,6 +562,19 @@ function bindControls() {
   });
   els.outerColor.addEventListener('input', () => { state.outerColor = els.outerColor.value; renderPreview(); saveOptions(); });
   els.innerColor.addEventListener('input', () => { state.innerColor = els.innerColor.value; renderPreview(); saveOptions(); });
+
+  els.innerColorOpacity.addEventListener('input', () => {
+    state.innerColorOpacity = parseFloat(els.innerColorOpacity.value);
+    els.innerColorOpacityVal.textContent = state.innerColorOpacity.toFixed(2);
+    renderPreview();
+    saveOptions();
+  });
+  els.innerImageOpacity.addEventListener('input', () => {
+    state.innerImageOpacity = parseFloat(els.innerImageOpacity.value);
+    els.innerImageOpacityVal.textContent = state.innerImageOpacity.toFixed(2);
+    renderPreview();
+    saveOptions();
+  });
 
   els.innerFill.addEventListener('change', () => {
     state.innerFill = els.innerFill.value;
@@ -575,9 +607,15 @@ function bindControls() {
     renderPreview();
     saveOptions();
   });
-  els.outerOpacity.addEventListener('input', () => {
-    state.outerOpacity = parseFloat(els.outerOpacity.value);
-    els.outerOpacityVal.textContent = state.outerOpacity.toFixed(2);
+  els.outerColorOpacity.addEventListener('input', () => {
+    state.outerColorOpacity = parseFloat(els.outerColorOpacity.value);
+    els.outerColorOpacityVal.textContent = state.outerColorOpacity.toFixed(2);
+    renderPreview();
+    saveOptions();
+  });
+  els.outerImageOpacity.addEventListener('input', () => {
+    state.outerImageOpacity = parseFloat(els.outerImageOpacity.value);
+    els.outerImageOpacityVal.textContent = state.outerImageOpacity.toFixed(2);
     renderPreview();
     saveOptions();
   });
@@ -603,12 +641,24 @@ function eventToGeo(e, geo) {
   };
 }
 
+// 由几何坐标定位所在格 {c, r}
+function cellAt(geo, gx, gy) {
+  return {
+    c: clamp(Math.floor((gx - geo.m) / geo.Sw), 0, geo.X - 1),
+    r: clamp(Math.floor((gy - geo.m) / geo.Sh), 0, geo.Y - 1),
+  };
+}
+
 function bindCanvasInteractions() {
   let dragging = false;
+  let dragCell = null;
   let last = null;
 
   canvas.addEventListener('pointerdown', (e) => {
-    if (!isSingleMode()) return;
+    if (!state.images.length) return;
+    const geo = computeGeometry(state);
+    const cur = eventToGeo(e, geo);
+    dragCell = cellAt(geo, cur.x, cur.y);        // 仅拖动光标所在的那一格
     dragging = true;
     last = { x: e.clientX, y: e.clientY };
     canvas.setPointerCapture(e.pointerId);
@@ -619,10 +669,11 @@ function bindCanvasInteractions() {
     const geo = computeGeometry(state);
     const rect = canvas.getBoundingClientRect();
     const ratio = geo.W / rect.width;            // CSS px → 几何 px
-    state.crop.offsetX += (e.clientX - last.x) * ratio;
-    state.crop.offsetY += (e.clientY - last.y) * ratio;
+    const crop = cellCrop(dragCell.c, dragCell.r);
+    crop.offsetX += (e.clientX - last.x) * ratio;
+    crop.offsetY += (e.clientY - last.y) * ratio;
     last = { x: e.clientX, y: e.clientY };
-    clampCrop();
+    clampCropCell(dragCell.c, dragCell.r);
     renderPreview();
   });
 
@@ -635,32 +686,32 @@ function bindCanvasInteractions() {
   canvas.addEventListener('pointercancel', endDrag);
 
   canvas.addEventListener('wheel', (e) => {
-    const img = singleImage();
-    if (!img) return;
+    if (!state.images.length) return;
     e.preventDefault();
     const geo = computeGeometry(state);
-    const newScale = clamp(state.crop.scale * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), 1, 5);
-    if (newScale === state.crop.scale) return;
-
-    const base = coverBaseScale(geo, img);
-    const before = imageDrawRect(img, geo);
-    const effOld = base * state.crop.scale;
     const cursor = eventToGeo(e, geo);
-    // 光标处对应的图片自身坐标
-    const imgX = (cursor.x - before.x) / effOld;
+    const { c, r } = cellAt(geo, cursor.x, cursor.y);   // 只缩放光标所在格
+    const crop = cellCrop(c, r);
+    const newScale = clamp(crop.scale * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), 1, 5);
+    if (newScale === crop.scale) return;
+
+    const img = state.images[(r * geo.X + c) % state.images.length];
+    const cell = cellContent(geo, c, r);
+    const base = coverScale(img, geo.Cw, geo.Ch);
+    const before = imageDrawRect(img, cell, crop);
+    const effOld = base * crop.scale;
+    const imgX = (cursor.x - before.x) / effOld;     // 光标处对应的图片自身坐标
     const imgY = (cursor.y - before.y) / effOld;
 
-    state.crop.scale = newScale;
+    crop.scale = newScale;
     const effNew = base * newScale;
     // 反推 offset，使光标下像素保持不动
     const w = img.naturalWidth * effNew;
     const h = img.naturalHeight * effNew;
-    const centerX = cursor.x + w / 2 - imgX * effNew;
-    const centerY = cursor.y + h / 2 - imgY * effNew;
-    state.crop.offsetX = centerX - geo.contentX - geo.Cw / 2;
-    state.crop.offsetY = centerY - geo.contentY - geo.Ch / 2;
+    crop.offsetX = (cursor.x + w / 2 - imgX * effNew) - (cell.x + cell.w / 2);
+    crop.offsetY = (cursor.y + h / 2 - imgY * effNew) - (cell.y + cell.h / 2);
 
-    clampCrop();
+    clampCropCell(c, r);
     renderPreview();
   }, { passive: false });
 }
