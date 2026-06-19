@@ -18,7 +18,8 @@ const ZOOM_STEP = 1.1;    // 每格滚轮缩放系数
 const MAX_PERF = 400;     // 齿孔数上限，防止超大图
 const MIN_PERF = 3;
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
-const PERSISTED = ['d', 'g', 'nx', 'ny', 'outerColor', 'outerOpacity',
+const PERSISTED = ['d', 'g', 'nx', 'ny', 'baseColor', 'baseOpacity',
+  'outerColor', 'outerOpacity', 'outerMargin',
   'innerColor', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
   'exportScale', 'view'];
 
@@ -27,8 +28,13 @@ const state = {
   g: 4,
   nx: 20,
   ny: 14,
+  baseColor: '#000000',                  // 最底层底色：齿孔镂空处透出它
+  baseOpacity: 1,                        // 底色透明度（调低可导出透明/半透明 PNG）
   outerColor: '#000000',
-  outerOpacity: 1,
+  outerOpacity: 0,                       // 默认 0：非小型张时外边距透明，露出底色
+  outerMargin: 0,                        // 外边距步进：0=半孔，每+1 增加一个 pitch
+  outerImage: null,                      // 外边距背景图（session 态，不持久化）
+  innerImage: null,                      // 内边距背景图（session 态，不持久化）
   innerColor: '#d4af37',                 // 纯色模式用色
   innerFill: 'solid',                    // 'solid' | 'linear' | 'radial'
   innerStops: [{ pos: 0, color: '#f0d979' }, { pos: 1, color: '#a67c1a' }],
@@ -52,11 +58,11 @@ function computeGeometry(s) {
   const pitch = s.d + s.g;
   const Sw = s.nx * pitch;
   const Sh = s.ny * pitch;
-  const m = s.d / 2;          // 外边距 / 邮票矩形偏移
+  const m = s.d / 2 + s.outerMargin * pitch;   // 外边距：半孔 + N 个 pitch
   const inner = pitch;        // 内边距
   return {
     d: s.d, pitch, Sw, Sh,
-    W: Sw + s.d, H: Sh + s.d,
+    W: Sw + 2 * m, H: Sh + 2 * m,
     m, inner,
     stampX: m, stampY: m,
     contentX: m + inner, contentY: m + inner,
@@ -143,6 +149,23 @@ function innerFillStyle(targetCtx, geo) {
 
 /* ---------- 渲染 ---------- */
 
+// 建一个与目标等尺寸、已套好 scale 变换的离屏图层
+function layerCanvas(geo, scale) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(geo.W * scale));
+  c.height = Math.max(1, Math.round(geo.H * scale));
+  const cx = c.getContext('2d');
+  cx.setTransform(scale, 0, 0, scale, 0, 0);
+  return cx;
+}
+
+// object-fit: cover 居中绘制（调用方需先 clip 到目标矩形）
+function drawCover(ctx, img, x, y, w, h) {
+  const k = Math.max(w / img.naturalWidth, h / img.naturalHeight);
+  const dw = img.naturalWidth * k, dh = img.naturalHeight * k;
+  ctx.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+}
+
 function render(targetCtx, scale) {
   const s = state;
   const geo = computeGeometry(s);
@@ -150,44 +173,60 @@ function render(targetCtx, scale) {
   cv.width = Math.max(1, Math.round(geo.W * scale));
   cv.height = Math.max(1, Math.round(geo.H * scale));
 
-  targetCtx.setTransform(scale, 0, 0, scale, 0, 0);
-  targetCtx.globalAlpha = 1;
-  targetCtx.globalCompositeOperation = 'source-over';
-  targetCtx.clearRect(0, 0, geo.W, geo.H);
-
-  // 2. 邮票主体：内边距色（纯色/渐变） + 照片
-  targetCtx.fillStyle = innerFillStyle(targetCtx, geo);
-  targetCtx.fillRect(geo.stampX, geo.stampY, geo.Sw, geo.Sh);
-
-  if (s.image && geo.Cw > 0 && geo.Ch > 0) {
-    targetCtx.save();
-    targetCtx.beginPath();
-    targetCtx.rect(geo.contentX, geo.contentY, geo.Cw, geo.Ch);
-    targetCtx.clip();
-    const r = imageDrawRect(s, geo);
-    targetCtx.drawImage(s.image, r.x, r.y, r.w, r.h);
-    targetCtx.restore();
+  // --- 外边距层 sheet（不透明：外色 + 外背景图 cover），随后整体按 outerOpacity 叠加 ---
+  const sheet = layerCanvas(geo, scale);
+  sheet.fillStyle = s.outerColor;
+  sheet.fillRect(0, 0, geo.W, geo.H);
+  if (s.outerImage) {
+    sheet.save();
+    sheet.beginPath(); sheet.rect(0, 0, geo.W, geo.H); sheet.clip();
+    drawCover(sheet, s.outerImage, 0, 0, geo.W, geo.H);
+    sheet.restore();
   }
 
-  // 3. 打孔
-  targetCtx.globalCompositeOperation = 'destination-out';
-  targetCtx.fillStyle = '#000';
+  // --- 装饰层 deco = 外边距层(@outerOpacity) + 邮票层，最后一并打孔 ---
+  const deco = layerCanvas(geo, scale);
+  deco.setTransform(1, 0, 0, 1, 0, 0);                 // 先以设备像素叠入 sheet
+  deco.globalAlpha = s.outerOpacity;
+  deco.drawImage(sheet.canvas, 0, 0);
+  deco.globalAlpha = 1;
+  deco.setTransform(scale, 0, 0, scale, 0, 0);          // 恢复几何坐标绘制邮票
+
+  deco.fillStyle = innerFillStyle(deco, geo);
+  deco.fillRect(geo.stampX, geo.stampY, geo.Sw, geo.Sh);
+  if (s.innerImage) {
+    deco.save();
+    deco.beginPath(); deco.rect(geo.stampX, geo.stampY, geo.Sw, geo.Sh); deco.clip();
+    drawCover(deco, s.innerImage, geo.stampX, geo.stampY, geo.Sw, geo.Sh);
+    deco.restore();
+  }
+  if (s.image && geo.Cw > 0 && geo.Ch > 0) {
+    deco.save();
+    deco.beginPath(); deco.rect(geo.contentX, geo.contentY, geo.Cw, geo.Ch); deco.clip();
+    const r = imageDrawRect(s, geo);
+    deco.drawImage(s.image, r.x, r.y, r.w, r.h);
+    deco.restore();
+  }
+  // 打孔：穿透外边距层 + 邮票层 → 透明，露出底层底色（完整镂空）
+  deco.globalCompositeOperation = 'destination-out';
+  deco.fillStyle = '#000';
   const radius = geo.d / 2;
   for (const c of holeCenters(geo)) {
-    targetCtx.beginPath();
-    targetCtx.arc(c.x, c.y, radius, 0, Math.PI * 2);
-    targetCtx.fill();
+    deco.beginPath();
+    deco.arc(c.x, c.y, radius, 0, Math.PI * 2);
+    deco.fill();
   }
+  deco.globalCompositeOperation = 'source-over';
 
-  // 4. 外边距色铺在所有透明区域之下
-  targetCtx.globalCompositeOperation = 'destination-over';
-  targetCtx.globalAlpha = s.outerOpacity;
-  targetCtx.fillStyle = s.outerColor;
-  targetCtx.fillRect(0, 0, geo.W, geo.H);
-
-  targetCtx.globalAlpha = 1;
-  targetCtx.globalCompositeOperation = 'source-over';
+  // --- 合成到目标：最底层底色(@baseOpacity) + 装饰层 ---
   targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+  targetCtx.globalCompositeOperation = 'source-over';
+  targetCtx.clearRect(0, 0, cv.width, cv.height);
+  targetCtx.globalAlpha = s.baseOpacity;
+  targetCtx.fillStyle = s.baseColor;
+  targetCtx.fillRect(0, 0, cv.width, cv.height);
+  targetCtx.globalAlpha = 1;
+  targetCtx.drawImage(deco.canvas, 0, 0);
 }
 
 function previewScale(geo) {
@@ -226,9 +265,22 @@ const els = {
   holeG: document.getElementById('holeG'),
   nx: document.getElementById('nx'),
   ny: document.getElementById('ny'),
+  baseColor: document.getElementById('baseColor'),
+  baseOpacity: document.getElementById('baseOpacity'),
+  baseOpacityVal: document.getElementById('baseOpacityVal'),
   outerColor: document.getElementById('outerColor'),
   outerOpacity: document.getElementById('outerOpacity'),
   outerOpacityVal: document.getElementById('outerOpacityVal'),
+  outerMargin: document.getElementById('outerMargin'),
+  outerMarginHint: document.getElementById('outerMarginHint'),
+  outerImgBtn: document.getElementById('outerImgBtn'),
+  outerImgClear: document.getElementById('outerImgClear'),
+  outerImgInput: document.getElementById('outerImgInput'),
+  outerImgInfo: document.getElementById('outerImgInfo'),
+  innerImgBtn: document.getElementById('innerImgBtn'),
+  innerImgClear: document.getElementById('innerImgClear'),
+  innerImgInput: document.getElementById('innerImgInput'),
+  innerImgInfo: document.getElementById('innerImgInfo'),
   innerColor: document.getElementById('innerColor'),
   innerColorRow: document.getElementById('innerColorRow'),
   innerFill: document.getElementById('innerFill'),
@@ -248,14 +300,24 @@ const els = {
   viewToggle: document.getElementById('viewToggle'),
 };
 
+function updateOuterMarginHint() {
+  const m = state.d / 2 + state.outerMargin * (state.d + state.g);
+  els.outerMarginHint.textContent = `≈ ${Math.round(m)}px`;
+}
+
 function syncInputsFromState() {
   els.holeD.value = state.d;
   els.holeG.value = state.g;
   els.nx.value = state.nx;
   els.ny.value = state.ny;
+  els.baseColor.value = state.baseColor;
+  els.baseOpacity.value = state.baseOpacity;
+  els.baseOpacityVal.textContent = Number(state.baseOpacity).toFixed(2);
   els.outerColor.value = state.outerColor;
   els.outerOpacity.value = state.outerOpacity;
   els.outerOpacityVal.textContent = Number(state.outerOpacity).toFixed(2);
+  els.outerMargin.value = state.outerMargin;
+  updateOuterMarginHint();
   els.innerColor.value = state.innerColor;
   els.innerFill.value = state.innerFill;
   els.innerAngle.value = state.innerAngle;
@@ -370,10 +432,36 @@ function clearImage() {
   renderPreview();
 }
 
+// 通用背景图选择器（内/外边距），载入 Image 到 state[key]，不影响齿孔计算
+function bindBgImagePicker(pickBtn, clearBtn, fileInput, infoEl, key) {
+  pickBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file || !file.type.startsWith('image/')) return;
+    const img = new Image();
+    img.onload = () => {
+      state[key] = img;
+      infoEl.textContent = file.name;
+      renderPreview();
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = () => { infoEl.textContent = '加载失败'; };
+    img.src = URL.createObjectURL(file);
+  });
+  clearBtn.addEventListener('click', () => {
+    state[key] = null;
+    fileInput.value = '';
+    infoEl.textContent = '无';
+    renderPreview();
+  });
+}
+
 function bindControls() {
   els.pickBtn.addEventListener('click', () => els.fileInput.click());
   els.clearBtn.addEventListener('click', clearImage);
   els.fileInput.addEventListener('change', (e) => loadImageFile(e.target.files && e.target.files[0]));
+  bindBgImagePicker(els.outerImgBtn, els.outerImgClear, els.outerImgInput, els.outerImgInfo, 'outerImage');
+  bindBgImagePicker(els.innerImgBtn, els.innerImgClear, els.innerImgInput, els.innerImgInfo, 'innerImage');
 
   const numField = (el, key, lo) => {
     el.addEventListener('input', () => {
@@ -381,6 +469,7 @@ function bindControls() {
       if (Number.isNaN(v)) return;
       state[key] = Math.max(lo, v);
       clampCrop();
+      updateOuterMarginHint();
       renderPreview();
       saveOptions();
     });
@@ -389,7 +478,15 @@ function bindControls() {
   numField(els.holeG, 'g', 0);
   numField(els.nx, 'nx', MIN_PERF);
   numField(els.ny, 'ny', MIN_PERF);
+  numField(els.outerMargin, 'outerMargin', 0);
 
+  els.baseColor.addEventListener('input', () => { state.baseColor = els.baseColor.value; renderPreview(); saveOptions(); });
+  els.baseOpacity.addEventListener('input', () => {
+    state.baseOpacity = parseFloat(els.baseOpacity.value);
+    els.baseOpacityVal.textContent = state.baseOpacity.toFixed(2);
+    renderPreview();
+    saveOptions();
+  });
   els.outerColor.addEventListener('input', () => { state.outerColor = els.outerColor.value; renderPreview(); saveOptions(); });
   els.innerColor.addEventListener('input', () => { state.innerColor = els.innerColor.value; renderPreview(); saveOptions(); });
 

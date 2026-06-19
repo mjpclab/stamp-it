@@ -11,7 +11,10 @@
     <aside class="panel">
       <h1>邮票化</h1>
 
+      <!-- 由内到外：照片 → 内边距 → 齿孔 → 外边距 -->
+
       <section class="group">
+        <h2 class="group-title">照片（最内）</h2>
         <button id="pickBtn" class="primary">选择图片</button>
         <button id="clearBtn" class="ghost small">清空图片</button>
         <input type="file" id="fileInput" accept="image/*" hidden>
@@ -19,27 +22,7 @@
       </section>
 
       <section class="group">
-        <label>孔直径 (px)
-          <input type="number" id="holeD" value="8" min="1" step="1">
-        </label>
-        <label>孔间距 (px)
-          <input type="number" id="holeG" value="4" min="0" step="1">
-        </label>
-        <label>水平齿孔数
-          <input type="number" id="nx" value="20" min="3" step="1">
-        </label>
-        <label>垂直齿孔数
-          <input type="number" id="ny" value="14" min="3" step="1">
-        </label>
-      </section>
-
-      <section class="group">
-        <label>外边距背景色
-          <input type="color" id="outerColor" value="#000000">
-        </label>
-        <label>外边距透明度 <span id="outerOpacityVal">1.00</span>
-          <input type="range" id="outerOpacity" min="0" max="1" step="0.01" value="1">
-        </label>
+        <h2 class="group-title">内边距</h2>
         <label>内边距填充
           <select id="innerFill">
             <option value="solid" selected>纯色</option>
@@ -65,9 +48,67 @@
             </label>
           </div>
         </div>
+        <div class="img-picker">
+          <span class="picker-label">内边距背景图（cover 居中，叠加于色/渐变上）</span>
+          <div class="picker-btns">
+            <button id="innerImgBtn" class="ghost small" type="button">选择</button>
+            <button id="innerImgClear" class="ghost small" type="button">清空</button>
+          </div>
+          <input type="file" id="innerImgInput" accept="image/*" hidden>
+          <span class="hint" id="innerImgInfo">无</span>
+        </div>
       </section>
 
       <section class="group">
+        <h2 class="group-title">齿孔</h2>
+        <label>孔直径 (px)
+          <input type="number" id="holeD" value="8" min="1" step="1">
+        </label>
+        <label>孔间距 (px)
+          <input type="number" id="holeG" value="4" min="0" step="1">
+        </label>
+        <label>水平齿孔数
+          <input type="number" id="nx" value="20" min="3" step="1">
+        </label>
+        <label>垂直齿孔数
+          <input type="number" id="ny" value="14" min="3" step="1">
+        </label>
+      </section>
+
+      <section class="group">
+        <h2 class="group-title">外边距（最外）</h2>
+        <label>外边距宽度（孔数）<span id="outerMarginHint">≈ 4px</span>
+          <input type="number" id="outerMargin" value="0" min="0" step="1">
+        </label>
+        <label>外边距背景色
+          <input type="color" id="outerColor" value="#000000">
+        </label>
+        <label>外边距透明度 <span id="outerOpacityVal">0.00</span>
+          <input type="range" id="outerOpacity" min="0" max="1" step="0.01" value="0">
+        </label>
+        <div class="img-picker">
+          <span class="picker-label">外边距背景图（cover 居中）</span>
+          <div class="picker-btns">
+            <button id="outerImgBtn" class="ghost small" type="button">选择</button>
+            <button id="outerImgClear" class="ghost small" type="button">清空</button>
+          </div>
+          <input type="file" id="outerImgInput" accept="image/*" hidden>
+          <span class="hint" id="outerImgInfo">无</span>
+        </div>
+      </section>
+
+      <section class="group">
+        <h2 class="group-title">底色（最底层 · 齿孔镂空透出）</h2>
+        <label>底色
+          <input type="color" id="baseColor" value="#000000">
+        </label>
+        <label>底色透明度 <span id="baseOpacityVal">1.00</span>
+          <input type="range" id="baseOpacity" min="0" max="1" step="0.01" value="1">
+        </label>
+      </section>
+
+      <section class="group">
+        <h2 class="group-title">导出</h2>
         <label>导出倍率
           <select id="exportScale">
             <option value="1">1x</option>
