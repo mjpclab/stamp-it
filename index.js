@@ -27,7 +27,8 @@ const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'baseColor', 'bas
   'outerColor', 'outerColorOpacity', 'outerImageOpacity',
   'outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft',
   'innerColor', 'innerColorOpacity', 'innerImageOpacity', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
-  'exportScale', 'view'];
+  'exportScale', 'view',
+  'crops', 'outerCrop', 'innerCrop'];   // 裁剪元数据随选项落盘；图片本体走 IndexedDB
 
 const state = {
   d: 8,
@@ -59,6 +60,8 @@ const state = {
   view: 'fit',              // 'fit' 适应窗口 | 'actual' 1:1 实际像素
   images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
   crops: {},                // 每格独立裁剪：键 "c,r" → {scale, offsetX, offsetY}（session 态）
+  outerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 外背景图缩放/平移（session 态）
+  innerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 内背景图缩放/平移（session 态）
 };
 
 const IDENTITY_CROP = { scale: 1, offsetX: 0, offsetY: 0 };
@@ -141,18 +144,36 @@ function imageDrawRect(img, content, crop) {
   return { x: cx - w / 2, y: cy - h / 2, w, h };
 }
 
+// 钳制 crop 的 offset：保证 img 始终铺满 w×h 的内容区（通用）
+function clampCropTo(crop, img, w, h) {
+  if (!img) return;
+  const eff = coverScale(img, w, h) * crop.scale;
+  const ox = Math.max(0, (img.naturalWidth * eff - w) / 2);
+  const oy = Math.max(0, (img.naturalHeight * eff - h) / 2);
+  crop.offsetX = clamp(crop.offsetX, -ox, ox);
+  crop.offsetY = clamp(crop.offsetY, -oy, oy);
+}
+
 // 钳制单格 crop 的 offset：保证该格图片铺满内容区
 function clampCropCell(c, r) {
   if (!state.images.length) return;
   const geo = computeGeometry(state);
   const img = state.images[(r * geo.X + c) % state.images.length];
-  if (!img) return;
-  const crop = cellCrop(c, r);
-  const eff = coverScale(img, geo.Cw, geo.Ch) * crop.scale;
-  const ox = Math.max(0, (img.naturalWidth * eff - geo.Cw) / 2);
-  const oy = Math.max(0, (img.naturalHeight * eff - geo.Ch) / 2);
-  crop.offsetX = clamp(crop.offsetX, -ox, ox);
-  crop.offsetY = clamp(crop.offsetY, -oy, oy);
+  clampCropTo(cellCrop(c, r), img, geo.Cw, geo.Ch);
+}
+
+// 钳制外背景图 crop：内容区为整张画布
+function clampOuterCrop() {
+  if (!state.outerImage) return;
+  const geo = computeGeometry(state);
+  clampCropTo(state.outerCrop, state.outerImage, geo.W, geo.H);
+}
+
+// 钳制内背景图 crop：内容区为矩阵块
+function clampInnerCrop() {
+  if (!state.innerImage) return;
+  const geo = computeGeometry(state);
+  clampCropTo(state.innerCrop, state.innerImage, geo.blockW, geo.blockH);
 }
 
 // 几何变化后重新钳制所有已编辑过的格
@@ -164,6 +185,8 @@ function clampAllCrops() {
       if (state.crops[c + ',' + r]) clampCropCell(c, r);
     }
   }
+  clampOuterCrop();
+  clampInnerCrop();
 }
 
 /* ---------- 内边距填充（纯色 / 线性 / 径向渐变） ---------- */
@@ -215,13 +238,6 @@ function layerCanvas(geo, scale) {
   return cx;
 }
 
-// object-fit: cover 居中绘制（调用方需先 clip 到目标矩形）
-function drawCover(ctx, img, x, y, w, h) {
-  const k = Math.max(w / img.naturalWidth, h / img.naturalHeight);
-  const dw = img.naturalWidth * k, dh = img.naturalHeight * k;
-  ctx.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
-}
-
 function render(targetCtx, scale) {
   const s = state;
   const geo = computeGeometry(s);
@@ -239,7 +255,9 @@ function render(targetCtx, scale) {
     sheet.save();
     sheet.globalAlpha = s.outerImageOpacity;
     sheet.beginPath(); sheet.rect(0, 0, geo.W, geo.H); sheet.clip();
-    drawCover(sheet, s.outerImage, 0, 0, geo.W, geo.H);
+    const full = { x: 0, y: 0, w: geo.W, h: geo.H };
+    const dr = imageDrawRect(s.outerImage, full, state.outerCrop);   // cover + 缩放/平移
+    sheet.drawImage(s.outerImage, dr.x, dr.y, dr.w, dr.h);
     sheet.restore();
   }
 
@@ -259,7 +277,9 @@ function render(targetCtx, scale) {
     inner.save();
     inner.globalAlpha = s.innerImageOpacity;
     inner.beginPath(); inner.rect(geo.blockX, geo.blockY, geo.blockW, geo.blockH); inner.clip();
-    drawCover(inner, s.innerImage, geo.blockX, geo.blockY, geo.blockW, geo.blockH);
+    const block = { x: geo.blockX, y: geo.blockY, w: geo.blockW, h: geo.blockH };
+    const idr = imageDrawRect(s.innerImage, block, state.innerCrop);   // cover + 缩放/平移
+    inner.drawImage(s.innerImage, idr.x, idr.y, idr.w, idr.h);
     inner.restore();
   }
   deco.setTransform(1, 0, 0, 1, 0, 0);                 // 以设备像素叠入内边距层
@@ -494,6 +514,107 @@ function renderStopsEditor() {
   });
 }
 
+/* ---------- 图片持久化（IndexedDB） ---------- */
+// 图片原始 Blob（用户选的 File 本身即 Blob）存 IndexedDB；裁剪元数据随 localStorage 落盘。
+// 所有操作失败一律静默 resolve（不抛错），IDB 不可用时整体降级为“不持久化”，行为同旧版。
+
+const IDB_NAME = 'stampit';
+const IDB_STORE = 'images';
+let idbPromise = null;   // 记忆化连接
+
+function idbOpen() {
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise((resolve) => {
+    try {
+      if (!window.indexedDB) { resolve(null); return; }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(IDB_STORE)) req.result.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+    } catch (_) { resolve(null); }
+  });
+  return idbPromise;
+}
+
+function idbPut(key, value) {
+  return idbOpen().then((db) => new Promise((resolve) => {
+    if (!db) { resolve(); return; }
+    try {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch (_) { resolve(); }
+  }));
+}
+
+function idbGet(key) {
+  return idbOpen().then((db) => new Promise((resolve) => {
+    if (!db) { resolve(null); return; }
+    try {
+      const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result == null ? null : req.result);
+      req.onerror = () => resolve(null);
+    } catch (_) { resolve(null); }
+  }));
+}
+
+function idbDelete(key) {
+  return idbOpen().then((db) => new Promise((resolve) => {
+    if (!db) { resolve(); return; }
+    try {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch (_) { resolve(); }
+  }));
+}
+
+// Blob → 解码后的 Image（失败 resolve(null)）；解码后即释放 object URL
+function blobToImage(blob) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+
+// 启动后异步从 IndexedDB 还原图片；裁剪状态已由 loadOptions() 同步还原，故此处不重置任何 crop
+async function restoreImages() {
+  try {
+    const [grid, outer, inner] = await Promise.all([idbGet('grid'), idbGet('outer'), idbGet('inner')]);
+
+    if (grid && Array.isArray(grid.items) && grid.items.length) {
+      const imgs = (await Promise.all(grid.items.map((it) => blobToImage(it.blob)))).filter(Boolean);
+      if (imgs.length) {
+        state.images = imgs;
+        els.imgInfo.textContent = imgs.length === 1
+          ? `${grid.items[0].name} (${imgs[0].naturalWidth}×${imgs[0].naturalHeight})`
+          : `${imgs.length} 张图片`;
+      }
+    }
+    if (outer && outer.blob) {
+      const img = await blobToImage(outer.blob);
+      if (img) { state.outerImage = img; els.outerImgInfo.textContent = outer.name; }
+    }
+    if (inner && inner.blob) {
+      const img = await blobToImage(inner.blob);
+      if (img) { state.innerImage = img; els.innerImgInfo.textContent = inner.name; }
+    }
+
+    clampAllCrops();
+    renderPreview();
+  } catch (_) { /* 还原失败：保持无图默认态 */ }
+}
+
 /* ---------- 选项持久化（localStorage） ---------- */
 
 function saveOptions() {
@@ -522,17 +643,19 @@ function loadPhotos(fileList) {
   els.imgInfo.textContent = '加载中…';
   Promise.all(files.map((f) => new Promise((res) => {
     const img = new Image();
-    img.onload = () => { URL.revokeObjectURL(img.src); res(img); };
-    img.onerror = () => { URL.revokeObjectURL(img.src); res(null); };
+    img.onload = () => { URL.revokeObjectURL(img.src); res({ img, file: f }); };
+    img.onerror = () => { URL.revokeObjectURL(img.src); res({ img: null, file: f }); };
     img.src = URL.createObjectURL(f);
-  }))).then((imgs) => {
-    const ok = imgs.filter(Boolean);
+  }))).then((pairs) => {
+    const ok = pairs.filter((p) => p.img);   // 保留 文件↔图片 对齐，仅成功项
     if (!ok.length) { els.imgInfo.textContent = '图片加载失败'; return; }
-    state.images = ok;
+    state.images = ok.map((p) => p.img);
     els.imgInfo.textContent = ok.length === 1
-      ? `${files[0].name} (${ok[0].naturalWidth}×${ok[0].naturalHeight})`
+      ? `${ok[0].file.name} (${ok[0].img.naturalWidth}×${ok[0].img.naturalHeight})`
       : `${ok.length} 张图片`;
     state.crops = {};   // 新图重置所有裁剪；齿孔数由用户手动调整
+    idbPut('grid', { items: ok.map((p) => ({ blob: p.file, name: p.file.name })) });   // 持久化原始 Blob
+    saveOptions();      // 用空 crops 覆盖旧持久值，避免残留
     renderPreview();
   });
 }
@@ -542,11 +665,14 @@ function clearImage() {
   state.crops = {};
   els.fileInput.value = '';                       // 允许重新选择同一文件
   els.imgInfo.textContent = '未选择图片';
+  idbDelete('grid');
+  saveOptions();                                  // 持久化清空后的 crops
   renderPreview();
 }
 
 // 通用背景图选择器（内/外边距），载入 Image 到 state[key]，不影响齿孔计算
 function bindBgImagePicker(pickBtn, clearBtn, fileInput, infoEl, key) {
+  const idbKey = key === 'outerImage' ? 'outer' : 'inner';
   pickBtn.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files && e.target.files[0];
@@ -554,7 +680,11 @@ function bindBgImagePicker(pickBtn, clearBtn, fileInput, infoEl, key) {
     const img = new Image();
     img.onload = () => {
       state[key] = img;
+      if (key === 'outerImage') state.outerCrop = { scale: 1, offsetX: 0, offsetY: 0 };
+      if (key === 'innerImage') state.innerCrop = { scale: 1, offsetX: 0, offsetY: 0 };
       infoEl.textContent = file.name;
+      idbPut(idbKey, { blob: file, name: file.name });   // 持久化原始 Blob
+      saveOptions();                                     // 持久化已重置的 crop
       renderPreview();
       URL.revokeObjectURL(img.src);
     };
@@ -563,8 +693,12 @@ function bindBgImagePicker(pickBtn, clearBtn, fileInput, infoEl, key) {
   });
   clearBtn.addEventListener('click', () => {
     state[key] = null;
+    if (key === 'outerImage') state.outerCrop = { scale: 1, offsetX: 0, offsetY: 0 };
+    if (key === 'innerImage') state.innerCrop = { scale: 1, offsetX: 0, offsetY: 0 };
     fileInput.value = '';
     infoEl.textContent = '无';
+    idbDelete(idbKey);
+    saveOptions();
     renderPreview();
   });
 }
@@ -725,16 +859,54 @@ function cellAt(geo, gx, gy) {
   };
 }
 
+// 命中目标：块外→外图；块内按 Alt / 是否有照片 → 内图或某格；否则 null（不响应）
+// wantInner（按住 Alt）在块内优先指向内背景图，便于在照片之上调整内图
+function hitTarget(geo, gx, gy, wantInner) {
+  const inBlock = gx >= geo.blockX && gx <= geo.blockX + geo.blockW &&
+                  gy >= geo.blockY && gy <= geo.blockY + geo.blockH;
+  if (!inBlock) return state.outerImage ? { type: 'outer' } : null;
+  if (wantInner && state.innerImage) return { type: 'inner' };
+  if (state.images.length) return { type: 'cell', ...cellAt(geo, gx, gy) };
+  return state.innerImage ? { type: 'inner' } : null;   // 无照片时块内直接调内图
+}
+
+// 目标 → {crop, img, content, doClamp}：统一 cell / outer / inner 三种拖拽缩放对象
+function cropContext(geo, t) {
+  if (t.type === 'outer') {
+    return {
+      crop: state.outerCrop,
+      img: state.outerImage,
+      content: { x: 0, y: 0, w: geo.W, h: geo.H },
+      doClamp: clampOuterCrop,
+    };
+  }
+  if (t.type === 'inner') {
+    return {
+      crop: state.innerCrop,
+      img: state.innerImage,
+      content: { x: geo.blockX, y: geo.blockY, w: geo.blockW, h: geo.blockH },
+      doClamp: clampInnerCrop,
+    };
+  }
+  return {
+    crop: cellCrop(t.c, t.r),
+    img: state.images[(t.r * geo.X + t.c) % state.images.length],
+    content: cellContent(geo, t.c, t.r),
+    doClamp: () => clampCropCell(t.c, t.r),
+  };
+}
+
 function bindCanvasInteractions() {
   let dragging = false;
-  let dragCell = null;
+  let dragTarget = null;
   let last = null;
 
   canvas.addEventListener('pointerdown', (e) => {
-    if (!state.images.length) return;
     const geo = computeGeometry(state);
     const cur = eventToGeo(e, geo);
-    dragCell = cellAt(geo, cur.x, cur.y);        // 仅拖动光标所在的那一格
+    const t = hitTarget(geo, cur.x, cur.y, e.altKey);
+    if (!t) return;
+    dragTarget = t;                              // 拖动光标命中的对象（格 / 外图 / 内图）
     dragging = true;
     last = { x: e.clientX, y: e.clientY };
     canvas.setPointerCapture(e.pointerId);
@@ -745,11 +917,11 @@ function bindCanvasInteractions() {
     const geo = computeGeometry(state);
     const rect = canvas.getBoundingClientRect();
     const ratio = geo.W / rect.width;            // CSS px → 几何 px
-    const crop = cellCrop(dragCell.c, dragCell.r);
+    const { crop, doClamp } = cropContext(geo, dragTarget);
     crop.offsetX += (e.clientX - last.x) * ratio;
     crop.offsetY += (e.clientY - last.y) * ratio;
     last = { x: e.clientX, y: e.clientY };
-    clampCropCell(dragCell.c, dragCell.r);
+    doClamp();
     renderPreview();
   });
 
@@ -757,24 +929,23 @@ function bindCanvasInteractions() {
     if (!dragging) return;
     dragging = false;
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    saveOptions();   // 拖拽结束落盘最终裁剪（避免 pointermove 每帧写盘）
   };
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
 
   canvas.addEventListener('wheel', (e) => {
-    if (!state.images.length) return;
-    e.preventDefault();
     const geo = computeGeometry(state);
     const cursor = eventToGeo(e, geo);
-    const { c, r } = cellAt(geo, cursor.x, cursor.y);   // 只缩放光标所在格
-    const crop = cellCrop(c, r);
+    const t = hitTarget(geo, cursor.x, cursor.y, e.altKey);   // 只缩放光标命中的对象
+    if (!t) return;
+    e.preventDefault();
+    const { crop, img, content, doClamp } = cropContext(geo, t);
     const newScale = clamp(crop.scale * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), 1, 5);
     if (newScale === crop.scale) return;
 
-    const img = state.images[(r * geo.X + c) % state.images.length];
-    const cell = cellContent(geo, c, r);
-    const base = coverScale(img, geo.Cw, geo.Ch);
-    const before = imageDrawRect(img, cell, crop);
+    const base = coverScale(img, content.w, content.h);
+    const before = imageDrawRect(img, content, crop);
     const effOld = base * crop.scale;
     const imgX = (cursor.x - before.x) / effOld;     // 光标处对应的图片自身坐标
     const imgY = (cursor.y - before.y) / effOld;
@@ -784,11 +955,12 @@ function bindCanvasInteractions() {
     // 反推 offset，使光标下像素保持不动
     const w = img.naturalWidth * effNew;
     const h = img.naturalHeight * effNew;
-    crop.offsetX = (cursor.x + w / 2 - imgX * effNew) - (cell.x + cell.w / 2);
-    crop.offsetY = (cursor.y + h / 2 - imgY * effNew) - (cell.y + cell.h / 2);
+    crop.offsetX = (cursor.x + w / 2 - imgX * effNew) - (content.x + content.w / 2);
+    crop.offsetY = (cursor.y + h / 2 - imgY * effNew) - (content.y + content.h / 2);
 
-    clampCropCell(c, r);
+    doClamp();
     renderPreview();
+    saveOptions();   // 滚轮缩放后落盘裁剪
   }, { passive: false });
 }
 
@@ -836,4 +1008,5 @@ bindCanvasInteractions();
 bindDragDrop();
 syncInputsFromState();
 renderPreview();
+restoreImages();   // 异步从 IndexedDB 还原图片，就绪后重渲染
 window.addEventListener('resize', renderPreview);
