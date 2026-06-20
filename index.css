@@ -165,6 +165,9 @@ button.ghost.small {
   align-self: flex-start;
 }
 
+button.ghost.danger { color: #e5534b; }
+button.ghost.danger:hover { border-color: #e5534b; }
+
 button.stop-del {
   flex: none;
   width: 26px;

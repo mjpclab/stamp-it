@@ -140,6 +140,14 @@
           </select>
         </label>
         <button id="exportBtn" class="primary">导出 PNG</button>
+        <p class="hint">方案：将当前所有参数与图片打包为 .json，可在其它设备/浏览器还原</p>
+        <div class="picker-btns">
+          <button id="exportSchemeBtn" class="ghost small" type="button">导出方案</button>
+          <button id="importSchemeBtn" class="ghost small" type="button">导入方案</button>
+          <button id="resetSchemeBtn" class="ghost small danger" type="button">重置</button>
+        </div>
+        <input type="file" id="schemeInput" accept="application/json,.json" hidden>
+        <p class="hint" id="schemeInfo"></p>
       </section>
     </aside>
 

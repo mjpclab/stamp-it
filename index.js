@@ -64,6 +64,9 @@ const state = {
   innerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 内背景图缩放/平移（session 态）
 };
 
+// 出厂默认值快照（在 loadOptions 改写 state 之前拍下），供“重置方案”还原最初始状态
+const DEFAULTS = structuredClone(state);
+
 const IDENTITY_CROP = { scale: 1, offsetX: 0, offsetY: 0 };
 function getCrop(c, r) { return state.crops[c + ',' + r] || IDENTITY_CROP; }   // 只读，缺省返回共享单位裁剪
 function cellCrop(c, r) {                                                       // 取（并按需创建）可编辑的格裁剪
@@ -390,6 +393,11 @@ const els = {
   originYVal: document.getElementById('originYVal'),
   exportScale: document.getElementById('exportScale'),
   exportBtn: document.getElementById('exportBtn'),
+  exportSchemeBtn: document.getElementById('exportSchemeBtn'),
+  importSchemeBtn: document.getElementById('importSchemeBtn'),
+  resetSchemeBtn: document.getElementById('resetSchemeBtn'),
+  schemeInput: document.getElementById('schemeInput'),
+  schemeInfo: document.getElementById('schemeInfo'),
   viewToggle: document.getElementById('viewToggle'),
 };
 
@@ -831,6 +839,14 @@ function bindControls() {
   });
   els.exportScale.addEventListener('change', () => { state.exportScale = parseFloat(els.exportScale.value); saveOptions(); });
   els.exportBtn.addEventListener('click', exportPng);
+  els.exportSchemeBtn.addEventListener('click', exportScheme);
+  els.importSchemeBtn.addEventListener('click', () => els.schemeInput.click());
+  els.resetSchemeBtn.addEventListener('click', resetScheme);
+  els.schemeInput.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) importScheme(file);
+    els.schemeInput.value = '';   // 允许重复导入同一文件
+  });
 
   els.viewToggle.addEventListener('click', () => {
     state.view = state.view === 'fit' ? 'actual' : 'fit';
@@ -998,6 +1014,194 @@ function exportPng() {
     a.click();
     URL.revokeObjectURL(url);
   }, 'image/png');
+}
+
+/* ---------- 方案导出/导入（配置参数 + 图片，单 JSON 文件） ---------- */
+// 设置取自 PERSISTED（含裁剪元数据）；图片本体内嵌为 base64 data URL。
+// 优先从 IndexedDB 取原始 Blob（保留原格式/文件名）；IDB 不可用时回退到内存 Image 经 canvas 转 PNG。
+
+const SCHEME_FORMAT = 'stampit-scheme';
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => resolve(null);
+    fr.readAsDataURL(blob);
+  });
+}
+
+// 回退：把内存 Image 经离屏 canvas 转 PNG data URL（blob 同源不污染画布）
+function imageToDataUrl(img) {
+  try {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    return c.toDataURL('image/png');
+  } catch (_) { return null; }
+}
+
+// data URL → Blob（手工解析，避免 file:// 下 fetch(data:) 受限）
+function dataUrlToBlob(dataUrl) {
+  const str = String(dataUrl || '');
+  const comma = str.indexOf(',');
+  if (comma < 0) return null;
+  const head = str.slice(0, comma);
+  const body = str.slice(comma + 1);
+  const mime = (head.match(/^data:([^;,]+)/) || [])[1] || 'application/octet-stream';
+  try {
+    if (/;base64/i.test(head)) {
+      const bin = atob(body);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return new Blob([arr], { type: mime });
+    }
+    return new Blob([decodeURIComponent(body)], { type: mime });
+  } catch (_) { return null; }
+}
+
+// 取某图片槽位的 {name, dataUrl}：优先 IDB 原始 Blob，否则回退内存 Image
+async function imageSlotToData(idbKey, memImg, fallbackName) {
+  const rec = await idbGet(idbKey);
+  if (rec && rec.blob) {
+    const dataUrl = await blobToDataUrl(rec.blob);
+    if (dataUrl) return { name: rec.name || fallbackName, dataUrl };
+  }
+  if (memImg) {
+    const dataUrl = imageToDataUrl(memImg);
+    if (dataUrl) return { name: fallbackName, dataUrl };
+  }
+  return null;
+}
+
+async function exportScheme() {
+  els.schemeInfo.textContent = '导出中…';
+  try {
+    const settings = {};
+    for (const k of PERSISTED) settings[k] = state[k];
+
+    const images = { grid: [], outer: null, inner: null };
+
+    const grid = await idbGet('grid');
+    if (grid && Array.isArray(grid.items) && grid.items.length) {
+      images.grid = (await Promise.all(grid.items.map(async (it) => {
+        const dataUrl = await blobToDataUrl(it.blob);
+        return dataUrl ? { name: it.name, dataUrl } : null;
+      }))).filter(Boolean);
+    } else if (state.images.length) {   // IDB 不可用时回退到内存图
+      images.grid = state.images.map((img, i) => {
+        const dataUrl = imageToDataUrl(img);
+        return dataUrl ? { name: `image-${i + 1}.png`, dataUrl } : null;
+      }).filter(Boolean);
+    }
+
+    images.outer = await imageSlotToData('outer', state.outerImage, 'outer.png');
+    images.inner = await imageSlotToData('inner', state.innerImage, 'inner.png');
+
+    const scheme = { format: SCHEME_FORMAT, version: 1, settings, images };
+    const blob = new Blob([JSON.stringify(scheme)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'stamp-scheme.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    els.schemeInfo.textContent = '方案已导出';
+  } catch (_) {
+    els.schemeInfo.textContent = '方案导出失败';
+  }
+}
+
+// 应用导入的背景图槽位（缺失则清空对应槽）
+async function applyImportedBg(rec, stateKey, idbKey, infoEl) {
+  const blob = rec && rec.dataUrl ? dataUrlToBlob(rec.dataUrl) : null;
+  if (blob) {
+    const img = await blobToImage(blob);
+    if (img) {
+      state[stateKey] = img;
+      infoEl.textContent = rec.name || '已导入';
+      await idbPut(idbKey, { blob, name: rec.name || idbKey });
+      return;
+    }
+  }
+  state[stateKey] = null;
+  infoEl.textContent = '无';
+  await idbDelete(idbKey);
+}
+
+async function importScheme(file) {
+  let scheme;
+  try {
+    scheme = JSON.parse(await file.text());
+  } catch (_) { els.schemeInfo.textContent = '方案文件解析失败'; return; }
+  if (!scheme || scheme.format !== SCHEME_FORMAT || typeof scheme.settings !== 'object') {
+    els.schemeInfo.textContent = '不是有效的方案文件';
+    return;
+  }
+  els.schemeInfo.textContent = '导入中…';
+
+  // 1. 应用设置（仅已知键，跳过空值）
+  for (const k of PERSISTED) {
+    const v = scheme.settings[k];
+    if (v !== null && v !== undefined) state[k] = v;
+  }
+
+  // 2. 应用图片（与设置同源；缺失槽位则清空）
+  const imgs = scheme.images || {};
+  const gridItems = Array.isArray(imgs.grid) ? imgs.grid : [];
+  const gridBlobs = gridItems
+    .map((it) => ({ blob: dataUrlToBlob(it.dataUrl), name: it.name }))
+    .filter((it) => it.blob);
+  if (gridBlobs.length) {
+    const decoded = (await Promise.all(gridBlobs.map((it) => blobToImage(it.blob)))).filter(Boolean);
+    state.images = decoded;
+    els.imgInfo.textContent = decoded.length === 1
+      ? `${gridBlobs[0].name} (${decoded[0].naturalWidth}×${decoded[0].naturalHeight})`
+      : `${decoded.length} 张图片`;
+    await idbPut('grid', { items: gridBlobs });
+  } else {
+    state.images = [];
+    els.imgInfo.textContent = '未选择图片';
+    await idbDelete('grid');
+  }
+  await applyImportedBg(imgs.outer, 'outerImage', 'outer', els.outerImgInfo);
+  await applyImportedBg(imgs.inner, 'innerImage', 'inner', els.innerImgInfo);
+
+  // 3. 同步盘面 + 重新钳制裁剪 + 落盘 + 渲染
+  clampAllCrops();
+  syncInputsFromState();
+  saveOptions();
+  renderPreview();
+  els.schemeInfo.textContent = '方案已导入';
+}
+
+// 重置方案：清空已保存的设置（localStorage）与图片（IndexedDB），回到出厂默认
+async function resetScheme() {
+  if (!window.confirm('确定要重置吗？将清空已保存的所有设置与图片，回到最初始状态。')) return;
+  els.schemeInfo.textContent = '重置中…';
+
+  // 1. 清空持久化存储
+  try {
+    for (const k of PERSISTED) localStorage.removeItem(STORAGE_PREFIX + k);
+  } catch (_) { /* 隐私模式等异常静默 */ }
+  await Promise.all([idbDelete('grid'), idbDelete('outer'), idbDelete('inner')]);
+
+  // 2. state 恢复出厂默认（深拷贝，避免共享引用）
+  Object.assign(state, structuredClone(DEFAULTS));
+
+  // 3. 复位图片信息与文件框
+  els.imgInfo.textContent = '未选择图片';
+  els.outerImgInfo.textContent = '无';
+  els.innerImgInfo.textContent = '无';
+  els.fileInput.value = '';
+  els.outerImgInput.value = '';
+  els.innerImgInput.value = '';
+
+  // 4. 同步盘面 + 渲染
+  syncInputsFromState();
+  renderPreview();
+  els.schemeInfo.textContent = '已重置为初始状态';
 }
 
 /* ---------- 启动 ---------- */
