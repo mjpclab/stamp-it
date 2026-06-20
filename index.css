@@ -110,6 +110,25 @@ button.primary:hover { filter: brightness(1.08); }
 
 .hint { font-size: 12px; color: var(--muted); }
 
+/* ---- 外边距十字输入盘（上 / 左·全·右 / 下） ---- */
+.margin-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, auto);
+  gap: 6px;
+  max-width: 240px;
+  align-items: center;
+  justify-items: center;
+}
+.margin-pad input[type="number"] {
+  width: 100%;
+}
+.margin-top { grid-area: 1 / 2; }
+.margin-left { grid-area: 2 / 1; }
+.margin-all { grid-area: 2 / 2; border-color: var(--accent); }
+.margin-right { grid-area: 2 / 3; }
+.margin-bottom { grid-area: 3 / 2; }
+
 /* ---- 图片选择块（内/外背景图） ---- */
 .img-picker {
   display: flex;

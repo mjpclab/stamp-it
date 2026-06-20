@@ -91,8 +91,14 @@
 
       <section class="group">
         <h2 class="group-title">外边距（最外）</h2>
-        <label>外边距宽度（孔数）<span id="outerMarginHint">≈ 4px</span>
-          <input type="number" id="outerMargin" value="0" min="0" step="1">
+        <label>外边距宽度（孔数，四向可调）<span id="outerMarginHint">≈ 4px</span>
+          <div class="margin-pad">
+            <input type="number" id="outerMarginTop" class="margin-cell margin-top" value="0" min="0" step="1" aria-label="上边距">
+            <input type="number" id="outerMarginLeft" class="margin-cell margin-left" value="0" min="0" step="1" aria-label="左边距">
+            <input type="number" id="outerMarginAll" class="margin-cell margin-all" min="0" step="1" placeholder="统一" aria-label="统一边距">
+            <input type="number" id="outerMarginRight" class="margin-cell margin-right" value="0" min="0" step="1" aria-label="右边距">
+            <input type="number" id="outerMarginBottom" class="margin-cell margin-bottom" value="0" min="0" step="1" aria-label="下边距">
+          </div>
         </label>
         <label>外边距背景色
           <input type="color" id="outerColor" value="#000000">

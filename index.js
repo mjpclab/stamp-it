@@ -24,7 +24,8 @@ const ZOOM_STEP = 1.1;    // 每格滚轮缩放系数
 const MIN_PERF = 3;       // 齿孔数下限
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
 const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'baseColor', 'baseOpacity',
-  'outerColor', 'outerColorOpacity', 'outerImageOpacity', 'outerMargin',
+  'outerColor', 'outerColorOpacity', 'outerImageOpacity',
+  'outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft',
   'innerColor', 'innerColorOpacity', 'innerImageOpacity', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
   'exportScale', 'view'];
 
@@ -40,7 +41,10 @@ const state = {
   outerColor: '#000000',
   outerColorOpacity: 0,                  // 外边距背景色透明度（默认 0：露出底色）
   outerImageOpacity: 1,                  // 外边距背景图透明度
-  outerMargin: 0,                        // 外边距步进：0=半孔，每+1 增加一个 pitch
+  outerMarginTop: 0,                     // 外边距步进（四向独立）：0=半孔，每+1 增加一个 pitch
+  outerMarginRight: 0,
+  outerMarginBottom: 0,
+  outerMarginLeft: 0,
   outerImage: null,                      // 外边距背景图（session 态，不持久化）
   innerImage: null,                      // 内边距背景图（session 态，不持久化）
   innerColor: '#d4af37',                 // 纯色模式用色
@@ -79,14 +83,18 @@ function computeGeometry(s) {
   const Y = Math.max(1, Math.round(s.matrixY));
   const blockW = X * Sw;              // 整个矩阵块
   const blockH = Y * Sh;
-  const m = s.d / 2 + s.outerMargin * pitch;   // 外边距：半孔 + N 个 pitch
+  const half = s.d / 2;                          // 半孔基准
+  const mT = half + s.outerMarginTop * pitch;    // 四向外边距：半孔 + N 个 pitch
+  const mR = half + s.outerMarginRight * pitch;
+  const mB = half + s.outerMarginBottom * pitch;
+  const mL = half + s.outerMarginLeft * pitch;
   const inner = pitch;        // 内边距
   return {
     d: s.d, pitch, Sw, Sh, X, Y, blockW, blockH,
-    W: blockW + 2 * m, H: blockH + 2 * m,
-    m, inner,
-    blockX: m, blockY: m,
-    contentX: m + inner, contentY: m + inner,   // (0,0) 格内容区，供单图模式复用
+    W: blockW + mL + mR, H: blockH + mT + mB,
+    mT, mR, mB, mL, inner,
+    blockX: mL, blockY: mT,
+    contentX: mL + inner, contentY: mT + inner,   // (0,0) 格内容区，供单图模式复用
     Cw: Sw - 2 * inner, Ch: Sh - 2 * inner,     // 单格内容区尺寸
   };
 }
@@ -94,25 +102,25 @@ function computeGeometry(s) {
 // 第 (c,r) 格的内容区矩形
 function cellContent(geo, c, r) {
   return {
-    x: geo.m + c * geo.Sw + geo.inner,
-    y: geo.m + r * geo.Sh + geo.inner,
+    x: geo.mL + c * geo.Sw + geo.inner,
+    y: geo.mT + r * geo.Sh + geo.inner,
     w: geo.Cw, h: geo.Ch,
   };
 }
 
 function holeCenters(geo) {
   const out = [];
-  const { m, pitch, Sw, Sh, X, Y } = geo;
+  const { mT, mL, pitch, Sw, Sh, X, Y } = geo;
   const nx = state.nx, ny = state.ny;
   const vTotal = Y * ny;     // 全高 = blockH / pitch
   for (let c = 0; c <= X; c++) {            // 垂直齿孔线
-    const x = m + c * Sw;
-    for (let k = 0; k <= vTotal; k++) out.push({ x, y: m + k * pitch });
+    const x = mL + c * Sw;
+    for (let k = 0; k <= vTotal; k++) out.push({ x, y: mT + k * pitch });
   }
   const hTotal = X * nx;     // 全宽 = blockW / pitch
   for (let r = 0; r <= Y; r++) {            // 水平齿孔线
-    const y = m + r * Sh;
-    for (let k = 0; k <= hTotal; k++) out.push({ x: m + k * pitch, y });
+    const y = mT + r * Sh;
+    for (let k = 0; k <= hTotal; k++) out.push({ x: mL + k * pitch, y });
   }
   return out;
 }
@@ -328,7 +336,11 @@ const els = {
   outerColorOpacityVal: document.getElementById('outerColorOpacityVal'),
   outerImageOpacity: document.getElementById('outerImageOpacity'),
   outerImageOpacityVal: document.getElementById('outerImageOpacityVal'),
-  outerMargin: document.getElementById('outerMargin'),
+  outerMarginTop: document.getElementById('outerMarginTop'),
+  outerMarginRight: document.getElementById('outerMarginRight'),
+  outerMarginBottom: document.getElementById('outerMarginBottom'),
+  outerMarginLeft: document.getElementById('outerMarginLeft'),
+  outerMarginAll: document.getElementById('outerMarginAll'),
   outerMarginHint: document.getElementById('outerMarginHint'),
   outerImgBtn: document.getElementById('outerImgBtn'),
   outerImgClear: document.getElementById('outerImgClear'),
@@ -361,9 +373,33 @@ const els = {
   viewToggle: document.getElementById('viewToggle'),
 };
 
+const MARGIN_SIDES = ['outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft'];
+
+// 四向边距是否一致
+function marginsUniform() {
+  return MARGIN_SIDES.every((k) => state[k] === state.outerMarginTop);
+}
+
 function updateOuterMarginHint() {
-  const m = state.d / 2 + state.outerMargin * (state.d + state.g);
-  els.outerMarginHint.textContent = `≈ ${Math.round(m)}px`;
+  const pitch = state.d + state.g;
+  const px = (k) => Math.round(state.d / 2 + state[k] * pitch);
+  els.outerMarginHint.textContent = marginsUniform()
+    ? `≈ ${px('outerMarginTop')}px`
+    : `≈ 上${px('outerMarginTop')} 右${px('outerMarginRight')} 下${px('outerMarginBottom')} 左${px('outerMarginLeft')}px`;
+}
+
+// “全”输入框：四向一致时显示统一值，否则留空（占位提示“统一”）
+function updateMarginAllField() {
+  els.outerMarginAll.value = marginsUniform() ? state.outerMarginTop : '';
+}
+
+// 把四向边距完整写回输入盘（用于载入 / 程序化变更）
+function syncMarginPad() {
+  els.outerMarginTop.value = state.outerMarginTop;
+  els.outerMarginRight.value = state.outerMarginRight;
+  els.outerMarginBottom.value = state.outerMarginBottom;
+  els.outerMarginLeft.value = state.outerMarginLeft;
+  updateMarginAllField();
 }
 
 function syncInputsFromState() {
@@ -381,7 +417,7 @@ function syncInputsFromState() {
   els.outerColorOpacityVal.textContent = Number(state.outerColorOpacity).toFixed(2);
   els.outerImageOpacity.value = state.outerImageOpacity;
   els.outerImageOpacityVal.textContent = Number(state.outerImageOpacity).toFixed(2);
-  els.outerMargin.value = state.outerMargin;
+  syncMarginPad();
   updateOuterMarginHint();
   els.innerColor.value = state.innerColor;
   els.innerColorOpacity.value = state.innerColorOpacity;
@@ -533,6 +569,40 @@ function bindBgImagePicker(pickBtn, clearBtn, fileInput, infoEl, key) {
   });
 }
 
+// 外边距十字输入盘：改“全”同步四向；单独改某向后，四向一致则“全”回填该值，否则留空
+function bindMarginPad() {
+  const afterChange = () => {
+    clampAllCrops();
+    updateOuterMarginHint();
+    renderPreview();
+    saveOptions();
+  };
+  // 单独改某一向：不回填正在输入的格，只刷新“全”框（空 / 统一值）
+  const sideField = (el, key) => {
+    el.addEventListener('input', () => {
+      const v = parseFloat(el.value);
+      if (Number.isNaN(v)) return;
+      state[key] = Math.max(0, v);
+      updateMarginAllField();
+      afterChange();
+    });
+  };
+  sideField(els.outerMarginTop, 'outerMarginTop');
+  sideField(els.outerMarginRight, 'outerMarginRight');
+  sideField(els.outerMarginBottom, 'outerMarginBottom');
+  sideField(els.outerMarginLeft, 'outerMarginLeft');
+
+  // 改“全”：同步四向并回填四个格
+  els.outerMarginAll.addEventListener('input', () => {
+    const v = parseFloat(els.outerMarginAll.value);
+    if (Number.isNaN(v)) return;
+    const m = Math.max(0, v);
+    for (const k of MARGIN_SIDES) state[k] = m;
+    syncMarginPad();
+    afterChange();
+  });
+}
+
 function bindControls() {
   els.pickBtn.addEventListener('click', () => els.fileInput.click());
   els.clearBtn.addEventListener('click', clearImage);
@@ -557,7 +627,7 @@ function bindControls() {
   numField(els.ny, 'ny', MIN_PERF);
   numField(els.matrixX, 'matrixX', 1);
   numField(els.matrixY, 'matrixY', 1);
-  numField(els.outerMargin, 'outerMargin', 0);
+  bindMarginPad();
 
   els.baseColor.addEventListener('input', () => { state.baseColor = els.baseColor.value; renderPreview(); saveOptions(); });
   els.baseOpacity.addEventListener('input', () => {
@@ -650,8 +720,8 @@ function eventToGeo(e, geo) {
 // 由几何坐标定位所在格 {c, r}
 function cellAt(geo, gx, gy) {
   return {
-    c: clamp(Math.floor((gx - geo.m) / geo.Sw), 0, geo.X - 1),
-    r: clamp(Math.floor((gy - geo.m) / geo.Sh), 0, geo.Y - 1),
+    c: clamp(Math.floor((gx - geo.mL) / geo.Sw), 0, geo.X - 1),
+    r: clamp(Math.floor((gy - geo.mT) / geo.Sh), 0, geo.Y - 1),
   };
 }
 
