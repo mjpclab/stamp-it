@@ -7,6 +7,8 @@
   --bg: #1e1f22;
   --panel: #2b2d31;
   --line: #3a3d43;
+  --card: #3c4049;          /* 页签卡片底色：比面板亮一档 */
+  --card-line: #575d69;     /* 页签卡片描边：比 --line 亮，突出卡片轮廓 */
   --text: #e6e7ea;
   --muted: #9a9da4;
   --accent: #d4af37;
@@ -109,6 +111,44 @@ button.primary {
 button.primary:hover { filter: brightness(1.08); }
 
 .hint { font-size: 12px; color: var(--muted); }
+
+/* ---- 图层标签页（内边距 / 外边距 / 底色）：经典页签，选中页与卡片面板连成一体 ---- */
+.tabs-group { gap: 0; }
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: -1px;      /* 让选中页签盖住面板顶边框 */
+  position: relative;
+  z-index: 1;
+}
+.tab-btn {
+  background: #1b1c1f;
+  border: 1px solid var(--card-line);
+  border-top-width: 2px;    /* 与选中态同高，避免文字跳动 */
+  border-radius: 8px 8px 0 0;
+  color: var(--muted);
+  padding: 8px 14px;
+  font-size: 13px;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  background: var(--card);
+  border-bottom-color: var(--card);   /* 底边融入面板 */
+  border-top-color: var(--accent);    /* 金色顶条标记选中 */
+  color: var(--accent);
+  font-weight: 600;
+}
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--card);
+  border: 1px solid var(--card-line);
+  border-radius: 0 8px 8px 8px;
+  padding: 14px 12px;
+}
 
 /* ---- 外边距十字输入盘（上 / 左·全·右 / 下） ---- */
 .margin-pad {

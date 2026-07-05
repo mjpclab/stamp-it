@@ -28,7 +28,7 @@ const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'baseColor', 'bas
   'outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft',
   'innerMarginTop', 'innerMarginRight', 'innerMarginBottom', 'innerMarginLeft',
   'innerColor', 'innerColorOpacity', 'innerImageOpacity', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
-  'exportScale', 'view',
+  'exportScale', 'view', 'layerTab',
   'crops', 'outerCrop', 'innerCrop'];   // 裁剪元数据随选项落盘；图片本体走 IndexedDB
 
 const state = {
@@ -63,6 +63,7 @@ const state = {
   innerOriginY: 0.5,                     // 径向渐变原点 Y（0–1，相对邮票矩形高）
   exportScale: 2,
   view: 'fit',              // 'fit' 适应窗口 | 'actual' 1:1 实际像素
+  layerTab: 'inner',        // 图层设置标签页：'inner' | 'outer' | 'base'
   images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
   crops: {},                // 每格独立裁剪：键 "c,r" → {scale, offsetX, offsetY}（session 态）
   outerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 外背景图缩放/平移（session 态）
@@ -381,6 +382,10 @@ const els = {
   innerMarginLeft: document.getElementById('innerMarginLeft'),
   innerMarginAll: document.getElementById('innerMarginAll'),
   innerMarginHint: document.getElementById('innerMarginHint'),
+  layerTabs: document.getElementById('layerTabs'),
+  tabInner: document.getElementById('tab-inner'),
+  tabOuter: document.getElementById('tab-outer'),
+  tabBase: document.getElementById('tab-base'),
   outerImgBtn: document.getElementById('outerImgBtn'),
   outerImgClear: document.getElementById('outerImgClear'),
   outerImgInput: document.getElementById('outerImgInput'),
@@ -458,6 +463,27 @@ function syncMarginPads() {
   for (const pad of MARGIN_PADS) syncMarginPad(pad);
 }
 
+/* ---------- 图层标签页（内边距 / 外边距 / 底色） ---------- */
+
+function updateLayerTab() {
+  const panels = { inner: els.tabInner, outer: els.tabOuter, base: els.tabBase };
+  if (!panels[state.layerTab]) state.layerTab = 'inner';   // 持久化/导入的非法值兜底
+  for (const btn of els.layerTabs.querySelectorAll('.tab-btn')) {
+    btn.classList.toggle('active', btn.dataset.tab === state.layerTab);
+  }
+  for (const [key, panel] of Object.entries(panels)) panel.hidden = key !== state.layerTab;
+}
+
+function bindLayerTabs() {
+  els.layerTabs.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn) return;
+    state.layerTab = btn.dataset.tab;
+    updateLayerTab();
+    saveOptions();
+  });
+}
+
 function syncInputsFromState() {
   els.holeD.value = state.d;
   els.holeG.value = state.g;
@@ -492,6 +518,7 @@ function syncInputsFromState() {
   els.viewToggle.classList.toggle('active', state.view === 'actual');
   renderStopsEditor();
   updateInnerControlsVisibility();
+  updateLayerTab();
 }
 
 /* ---------- 内边距渐变控件 ---------- */
@@ -795,6 +822,7 @@ function bindControls() {
   numField(els.matrixX, 'matrixX', 1);
   numField(els.matrixY, 'matrixY', 1);
   bindMarginPads();
+  bindLayerTabs();
 
   els.baseColor.addEventListener('input', () => { state.baseColor = els.baseColor.value; renderPreview(); saveOptions(); });
   els.baseOpacity.addEventListener('input', () => {

@@ -45,8 +45,14 @@
         </div>
       </section>
 
-      <section class="group">
-        <h2 class="group-title">内边距</h2>
+      <section class="group tabs-group">
+        <div class="tab-bar" id="layerTabs">
+          <button class="tab-btn active" type="button" data-tab="inner">内边距</button>
+          <button class="tab-btn" type="button" data-tab="outer">外边距</button>
+          <button class="tab-btn" type="button" data-tab="base">底色</button>
+        </div>
+
+        <div class="tab-panel" id="tab-inner">
         <label>内边距宽度（孔数，四向可调）<span id="innerMarginHint">≈ 12px</span>
           <div class="margin-pad">
             <input type="number" id="innerMarginTop" class="margin-cell margin-top" value="1" min="0" step="1" aria-label="上内边距">
@@ -96,10 +102,9 @@
         <label>内边距背景图透明度 <span id="innerImageOpacityVal">1.00</span>
           <input type="range" id="innerImageOpacity" min="0" max="1" step="0.01" value="1">
         </label>
-      </section>
+        </div>
 
-      <section class="group">
-        <h2 class="group-title">外边距（最外）</h2>
+        <div class="tab-panel" id="tab-outer" hidden>
         <label>外边距宽度（孔数，四向可调）<span id="outerMarginHint">≈ 4px</span>
           <div class="margin-pad">
             <input type="number" id="outerMarginTop" class="margin-cell margin-top" value="0" min="0" step="1" aria-label="上边距">
@@ -127,16 +132,17 @@
         <label>外边距背景图透明度 <span id="outerImageOpacityVal">1.00</span>
           <input type="range" id="outerImageOpacity" min="0" max="1" step="0.01" value="1">
         </label>
-      </section>
+        </div>
 
-      <section class="group">
-        <h2 class="group-title">底色（最底层 · 齿孔镂空透出）</h2>
+        <div class="tab-panel" id="tab-base" hidden>
+        <p class="hint">最底层，齿孔镂空处透出此色</p>
         <label>底色
           <input type="color" id="baseColor" value="#000000">
         </label>
         <label>底色透明度 <span id="baseOpacityVal">1.00</span>
           <input type="range" id="baseOpacity" min="0" max="1" step="0.01" value="1">
         </label>
+        </div>
       </section>
 
       <section class="group">
