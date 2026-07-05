@@ -7,7 +7,7 @@
  *   - 邮票矩形：Sw = nx*pitch, Sh = ny*pitch
  *   - 外边距 = d/2：画布 W = Sw+d, H = Sh+d，邮票矩形偏移 (d/2, d/2)
  *   - 齿孔：半径 d/2 的整圆，圆心落在邮票矩形边线上，按 pitch 间隔；边角圆形成四分之一孔
- *   - 内边距 = 四向各 N 个 pitch（默认 1）→ Cw=(nx-左-右)*pitch, Ch=(ny-上-下)*pitch
+ *   - 内边距 = 四向各 N 个 pitch（默认 0.75）→ Cw=(nx-左-右)*pitch, Ch=(ny-上-下)*pitch
  *
  * 渲染顺序（离屏分层、自底向上合成，天然支持半透明导出）：
  *   1. base 底色层（baseColor@baseOpacity）—— 最底层，齿孔镂空处透出它
@@ -47,10 +47,10 @@ const state = {
   outerMarginRight: 0,
   outerMarginBottom: 0,
   outerMarginLeft: 0,
-  innerMarginTop: 1,                     // 内边距步进（四向独立）：每格 N 个 pitch
-  innerMarginRight: 1,
-  innerMarginBottom: 1,
-  innerMarginLeft: 1,
+  innerMarginTop: 0.75,                  // 内边距步进（四向独立）：每格 N 个 pitch
+  innerMarginRight: 0.75,
+  innerMarginBottom: 0.75,
+  innerMarginLeft: 0.75,
   outerImage: null,                      // 外边距背景图（session 态，不持久化）
   innerImage: null,                      // 内边距背景图（session 态，不持久化）
   innerColor: '#d4af37',                 // 纯色模式用色
