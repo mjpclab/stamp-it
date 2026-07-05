@@ -7,7 +7,7 @@
  *   - 邮票矩形：Sw = nx*pitch, Sh = ny*pitch
  *   - 外边距 = d/2：画布 W = Sw+d, H = Sh+d，邮票矩形偏移 (d/2, d/2)
  *   - 齿孔：半径 d/2 的整圆，圆心落在邮票矩形边线上，按 pitch 间隔；边角圆形成四分之一孔
- *   - 内边距 = pitch：内容区四边各内缩 pitch → Cw=(nx-2)*pitch, Ch=(ny-2)*pitch
+ *   - 内边距 = 四向各 N 个 pitch（默认 1）→ Cw=(nx-左-右)*pitch, Ch=(ny-上-下)*pitch
  *
  * 渲染顺序（离屏分层、自底向上合成，天然支持半透明导出）：
  *   1. base 底色层（baseColor@baseOpacity）—— 最底层，齿孔镂空处透出它
@@ -26,6 +26,7 @@ const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
 const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'baseColor', 'baseOpacity',
   'outerColor', 'outerColorOpacity', 'outerImageOpacity',
   'outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft',
+  'innerMarginTop', 'innerMarginRight', 'innerMarginBottom', 'innerMarginLeft',
   'innerColor', 'innerColorOpacity', 'innerImageOpacity', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
   'exportScale', 'view',
   'crops', 'outerCrop', 'innerCrop'];   // 裁剪元数据随选项落盘；图片本体走 IndexedDB
@@ -46,6 +47,10 @@ const state = {
   outerMarginRight: 0,
   outerMarginBottom: 0,
   outerMarginLeft: 0,
+  innerMarginTop: 1,                     // 内边距步进（四向独立）：每格 N 个 pitch
+  innerMarginRight: 1,
+  innerMarginBottom: 1,
+  innerMarginLeft: 1,
   outerImage: null,                      // 外边距背景图（session 态，不持久化）
   innerImage: null,                      // 内边距背景图（session 态，不持久化）
   innerColor: '#d4af37',                 // 纯色模式用色
@@ -94,22 +99,25 @@ function computeGeometry(s) {
   const mR = half + s.outerMarginRight * pitch;
   const mB = half + s.outerMarginBottom * pitch;
   const mL = half + s.outerMarginLeft * pitch;
-  const inner = pitch;        // 内边距
+  const iT = s.innerMarginTop * pitch;           // 四向内边距：N 个 pitch
+  const iR = s.innerMarginRight * pitch;
+  const iB = s.innerMarginBottom * pitch;
+  const iL = s.innerMarginLeft * pitch;
   return {
     d: s.d, pitch, Sw, Sh, X, Y, blockW, blockH,
     W: blockW + mL + mR, H: blockH + mT + mB,
-    mT, mR, mB, mL, inner,
+    mT, mR, mB, mL, iT, iR, iB, iL,
     blockX: mL, blockY: mT,
-    contentX: mL + inner, contentY: mT + inner,   // (0,0) 格内容区，供单图模式复用
-    Cw: Sw - 2 * inner, Ch: Sh - 2 * inner,     // 单格内容区尺寸
+    contentX: mL + iL, contentY: mT + iT,   // (0,0) 格内容区，供单图模式复用
+    Cw: Sw - iL - iR, Ch: Sh - iT - iB,     // 单格内容区尺寸
   };
 }
 
 // 第 (c,r) 格的内容区矩形
 function cellContent(geo, c, r) {
   return {
-    x: geo.mL + c * geo.Sw + geo.inner,
-    y: geo.mT + r * geo.Sh + geo.inner,
+    x: geo.mL + c * geo.Sw + geo.iL,
+    y: geo.mT + r * geo.Sh + geo.iT,
     w: geo.Cw, h: geo.Ch,
   };
 }
@@ -161,6 +169,8 @@ function clampCropTo(crop, img, w, h) {
 function clampCropCell(c, r) {
   if (!state.images.length) return;
   const geo = computeGeometry(state);
+  if (geo.Cw <= 0 || geo.Ch <= 0) return;   // 内边距过大挤没内容区时跳过钳制
+
   const img = state.images[(r * geo.X + c) % state.images.length];
   clampCropTo(cellCrop(c, r), img, geo.Cw, geo.Ch);
 }
@@ -365,6 +375,12 @@ const els = {
   outerMarginLeft: document.getElementById('outerMarginLeft'),
   outerMarginAll: document.getElementById('outerMarginAll'),
   outerMarginHint: document.getElementById('outerMarginHint'),
+  innerMarginTop: document.getElementById('innerMarginTop'),
+  innerMarginRight: document.getElementById('innerMarginRight'),
+  innerMarginBottom: document.getElementById('innerMarginBottom'),
+  innerMarginLeft: document.getElementById('innerMarginLeft'),
+  innerMarginAll: document.getElementById('innerMarginAll'),
+  innerMarginHint: document.getElementById('innerMarginHint'),
   outerImgBtn: document.getElementById('outerImgBtn'),
   outerImgClear: document.getElementById('outerImgClear'),
   outerImgInput: document.getElementById('outerImgInput'),
@@ -401,33 +417,45 @@ const els = {
   viewToggle: document.getElementById('viewToggle'),
 };
 
-const MARGIN_SIDES = ['outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft'];
+// 内外边距十字盘共用一套控件逻辑；toPx 是各自的“步进 → 像素”换算
+const MARGIN_PADS = [
+  { sides: ['outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft'],
+    all: 'outerMarginAll', hint: 'outerMarginHint',
+    toPx: (v, pitch) => Math.round(state.d / 2 + v * pitch) },   // 外：半孔 + N 个 pitch
+  { sides: ['innerMarginTop', 'innerMarginRight', 'innerMarginBottom', 'innerMarginLeft'],
+    all: 'innerMarginAll', hint: 'innerMarginHint',
+    toPx: (v, pitch) => Math.round(v * pitch) },                 // 内：N 个 pitch
+];
 
-// 四向边距是否一致
-function marginsUniform() {
-  return MARGIN_SIDES.every((k) => state[k] === state.outerMarginTop);
+// 某盘四向边距是否一致
+function marginsUniform(pad) {
+  return pad.sides.every((k) => state[k] === state[pad.sides[0]]);
 }
 
-function updateOuterMarginHint() {
+function updateMarginHints() {
   const pitch = state.d + state.g;
-  const px = (k) => Math.round(state.d / 2 + state[k] * pitch);
-  els.outerMarginHint.textContent = marginsUniform()
-    ? `≈ ${px('outerMarginTop')}px`
-    : `≈ 上${px('outerMarginTop')} 右${px('outerMarginRight')} 下${px('outerMarginBottom')} 左${px('outerMarginLeft')}px`;
+  for (const pad of MARGIN_PADS) {
+    const px = (k) => pad.toPx(state[k], pitch);
+    const [t, r, b, l] = pad.sides;
+    els[pad.hint].textContent = marginsUniform(pad)
+      ? `≈ ${px(t)}px`
+      : `≈ 上${px(t)} 右${px(r)} 下${px(b)} 左${px(l)}px`;
+  }
 }
 
 // “全”输入框：四向一致时显示统一值，否则留空（占位提示“统一”）
-function updateMarginAllField() {
-  els.outerMarginAll.value = marginsUniform() ? state.outerMarginTop : '';
+function updateMarginAllField(pad) {
+  els[pad.all].value = marginsUniform(pad) ? state[pad.sides[0]] : '';
 }
 
 // 把四向边距完整写回输入盘（用于载入 / 程序化变更）
-function syncMarginPad() {
-  els.outerMarginTop.value = state.outerMarginTop;
-  els.outerMarginRight.value = state.outerMarginRight;
-  els.outerMarginBottom.value = state.outerMarginBottom;
-  els.outerMarginLeft.value = state.outerMarginLeft;
-  updateMarginAllField();
+function syncMarginPad(pad) {
+  for (const k of pad.sides) els[k].value = state[k];
+  updateMarginAllField(pad);
+}
+
+function syncMarginPads() {
+  for (const pad of MARGIN_PADS) syncMarginPad(pad);
 }
 
 function syncInputsFromState() {
@@ -445,8 +473,8 @@ function syncInputsFromState() {
   els.outerColorOpacityVal.textContent = Number(state.outerColorOpacity).toFixed(2);
   els.outerImageOpacity.value = state.outerImageOpacity;
   els.outerImageOpacityVal.textContent = Number(state.outerImageOpacity).toFixed(2);
-  syncMarginPad();
-  updateOuterMarginHint();
+  syncMarginPads();
+  updateMarginHints();
   els.innerColor.value = state.innerColor;
   els.innerColorOpacity.value = state.innerColorOpacity;
   els.innerColorOpacityVal.textContent = Number(state.innerColorOpacity).toFixed(2);
@@ -711,38 +739,35 @@ function bindBgImagePicker(pickBtn, clearBtn, fileInput, infoEl, key) {
   });
 }
 
-// 外边距十字输入盘：改“全”同步四向；单独改某向后，四向一致则“全”回填该值，否则留空
-function bindMarginPad() {
+// 内外边距十字输入盘：改“全”同步四向；单独改某向后，四向一致则“全”回填该值，否则留空
+function bindMarginPads() {
   const afterChange = () => {
     clampAllCrops();
-    updateOuterMarginHint();
+    updateMarginHints();
     renderPreview();
     saveOptions();
   };
-  // 单独改某一向：不回填正在输入的格，只刷新“全”框（空 / 统一值）
-  const sideField = (el, key) => {
-    el.addEventListener('input', () => {
-      const v = parseFloat(el.value);
+  for (const pad of MARGIN_PADS) {
+    // 单独改某一向：不回填正在输入的格，只刷新“全”框（空 / 统一值）
+    for (const key of pad.sides) {
+      els[key].addEventListener('input', () => {
+        const v = parseFloat(els[key].value);
+        if (Number.isNaN(v)) return;
+        state[key] = Math.max(0, v);
+        updateMarginAllField(pad);
+        afterChange();
+      });
+    }
+    // 改“全”：同步四向并回填四个格
+    els[pad.all].addEventListener('input', () => {
+      const v = parseFloat(els[pad.all].value);
       if (Number.isNaN(v)) return;
-      state[key] = Math.max(0, v);
-      updateMarginAllField();
+      const m = Math.max(0, v);
+      for (const k of pad.sides) state[k] = m;
+      syncMarginPad(pad);
       afterChange();
     });
-  };
-  sideField(els.outerMarginTop, 'outerMarginTop');
-  sideField(els.outerMarginRight, 'outerMarginRight');
-  sideField(els.outerMarginBottom, 'outerMarginBottom');
-  sideField(els.outerMarginLeft, 'outerMarginLeft');
-
-  // 改“全”：同步四向并回填四个格
-  els.outerMarginAll.addEventListener('input', () => {
-    const v = parseFloat(els.outerMarginAll.value);
-    if (Number.isNaN(v)) return;
-    const m = Math.max(0, v);
-    for (const k of MARGIN_SIDES) state[k] = m;
-    syncMarginPad();
-    afterChange();
-  });
+  }
 }
 
 function bindControls() {
@@ -758,7 +783,7 @@ function bindControls() {
       if (Number.isNaN(v)) return;
       state[key] = Math.max(lo, v);
       clampAllCrops();
-      updateOuterMarginHint();
+      updateMarginHints();
       renderPreview();
       saveOptions();
     });
@@ -769,7 +794,7 @@ function bindControls() {
   numField(els.ny, 'ny', MIN_PERF);
   numField(els.matrixX, 'matrixX', 1);
   numField(els.matrixY, 'matrixY', 1);
-  bindMarginPad();
+  bindMarginPads();
 
   els.baseColor.addEventListener('input', () => { state.baseColor = els.baseColor.value; renderPreview(); saveOptions(); });
   els.baseOpacity.addEventListener('input', () => {
