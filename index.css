@@ -112,8 +112,13 @@ button.primary:hover { filter: brightness(1.08); }
 
 .hint { font-size: 12px; color: var(--muted); }
 
-/* ---- 图层标签页（内边距 / 外边距 / 底色）：经典页签，选中页与卡片面板连成一体 ---- */
+/* ---- 标签页（矩阵/齿孔、内边距/外边距/底色）：经典页签，选中页与卡片面板连成一体 ---- */
+/* .tabs-group 整节即页签；.tabs 只包住节内的页签区（同节还有页签外的控件时用它） */
 .tabs-group { gap: 0; }
+.tabs {
+  display: flex;
+  flex-direction: column;
+}
 .tab-bar {
   display: flex;
   gap: 4px;

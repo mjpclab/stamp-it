@@ -19,38 +19,51 @@
         <button id="clearBtn" class="ghost small">清空图片</button>
         <input type="file" id="fileInput" accept="image/*" multiple hidden>
         <p class="hint" id="imgInfo">未选择图片</p>
-        <div class="field-row">
-          <label>列数 X
-            <input type="number" id="matrixX" value="1" min="1" step="1">
-          </label>
-          <label>行数 Y
-            <input type="number" id="matrixY" value="1" min="1" step="1">
-          </label>
-        </div>
-        <div class="field-row">
-          <label>跨格宽
-            <input type="number" id="spanX" value="1" min="1" step="1">
-          </label>
-          <label>跨格高
-            <input type="number" id="spanY" value="1" min="1" step="1">
-          </label>
-        </div>
-        <p class="hint">连票：连续「跨格宽×跨格高」格合成一张图，组内不留白边</p>
-        <div class="field-row">
-          <label>孔直径 (px)
-            <input type="number" id="holeD" value="8" min="1" step="1">
-          </label>
-          <label>孔间距 (px)
-            <input type="number" id="holeG" value="4" min="0" step="1">
-          </label>
-        </div>
-        <div class="field-row">
-          <label>水平齿孔数
-            <input type="number" id="nx" value="20" min="3" step="1">
-          </label>
-          <label>垂直齿孔数
-            <input type="number" id="ny" value="14" min="3" step="1">
-          </label>
+
+        <div class="tabs">
+          <div class="tab-bar" id="stampTabs">
+            <button class="tab-btn active" type="button" data-tab="matrix">矩阵</button>
+            <button class="tab-btn" type="button" data-tab="perf">齿孔</button>
+          </div>
+
+          <div class="tab-panel" id="tab-matrix">
+            <div class="field-row">
+              <label>列数 X
+                <input type="number" id="matrixX" value="1" min="1" step="1">
+              </label>
+              <label>行数 Y
+                <input type="number" id="matrixY" value="1" min="1" step="1">
+              </label>
+            </div>
+            <div class="field-row">
+              <label>跨格宽
+                <input type="number" id="spanX" value="1" min="1" step="1">
+              </label>
+              <label>跨格高
+                <input type="number" id="spanY" value="1" min="1" step="1">
+              </label>
+            </div>
+            <p class="hint">连票：连续「跨格宽×跨格高」格合成一张图，组内不留白边</p>
+          </div>
+
+          <div class="tab-panel" id="tab-perf" hidden>
+            <div class="field-row">
+              <label>孔直径 (px)
+                <input type="number" id="holeD" value="8" min="1" step="1">
+              </label>
+              <label>孔间距 (px)
+                <input type="number" id="holeG" value="4" min="0" step="1">
+              </label>
+            </div>
+            <div class="field-row">
+              <label>水平齿孔数
+                <input type="number" id="nx" value="20" min="3" step="1">
+              </label>
+              <label>垂直齿孔数
+                <input type="number" id="ny" value="14" min="3" step="1">
+              </label>
+            </div>
+          </div>
         </div>
       </section>
 

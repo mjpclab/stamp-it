@@ -30,7 +30,7 @@ const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY',
   'outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft',
   'innerMarginTop', 'innerMarginRight', 'innerMarginBottom', 'innerMarginLeft',
   'innerColor', 'innerColorOpacity', 'innerImageOpacity', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
-  'exportScale', 'view', 'layerTab',
+  'exportScale', 'view', 'stampTab', 'layerTab',
   'crops', 'outerCrop', 'innerCrop'];   // 裁剪元数据随选项落盘；图片本体走 IndexedDB
 
 const state = {
@@ -67,6 +67,7 @@ const state = {
   innerOriginY: 0.5,                     // 径向渐变原点 Y（0–1，相对邮票矩形高）
   exportScale: 2,
   view: 'fit',              // 'fit' 适应窗口 | 'actual' 1:1 实际像素
+  stampTab: 'matrix',       // 照片与齿孔标签页：'matrix' | 'perf'
   layerTab: 'inner',        // 图层设置标签页：'inner' | 'outer' | 'base'
   images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
   crops: {},                // 每跨格组独立裁剪：键 "c0,r0"（组起始格）→ {scale, offsetX, offsetY}
@@ -409,6 +410,9 @@ const els = {
   innerMarginLeft: document.getElementById('innerMarginLeft'),
   innerMarginAll: document.getElementById('innerMarginAll'),
   innerMarginHint: document.getElementById('innerMarginHint'),
+  stampTabs: document.getElementById('stampTabs'),
+  tabMatrix: document.getElementById('tab-matrix'),
+  tabPerf: document.getElementById('tab-perf'),
   layerTabs: document.getElementById('layerTabs'),
   tabInner: document.getElementById('tab-inner'),
   tabOuter: document.getElementById('tab-outer'),
@@ -490,25 +494,34 @@ function syncMarginPads() {
   for (const pad of MARGIN_PADS) syncMarginPad(pad);
 }
 
-/* ---------- 图层标签页（内边距 / 外边距 / 底色） ---------- */
+/* ---------- 标签页组（矩阵/齿孔、内边距/外边距/底色） ---------- */
 
-function updateLayerTab() {
-  const panels = { inner: els.tabInner, outer: els.tabOuter, base: els.tabBase };
-  if (!panels[state.layerTab]) state.layerTab = 'inner';   // 持久化/导入的非法值兜底
-  for (const btn of els.layerTabs.querySelectorAll('.tab-btn')) {
-    btn.classList.toggle('active', btn.dataset.tab === state.layerTab);
+// 每组：选中态存在哪个 state 键、页签栏元素、各页签 → 面板元素；新增一组只需在此登记
+const TAB_GROUPS = [
+  { key: 'stampTab', bar: 'stampTabs', fallback: 'matrix', panels: { matrix: 'tabMatrix', perf: 'tabPerf' } },
+  { key: 'layerTab', bar: 'layerTabs', fallback: 'inner', panels: { inner: 'tabInner', outer: 'tabOuter', base: 'tabBase' } },
+];
+
+function updateTabs() {
+  for (const g of TAB_GROUPS) {
+    if (!g.panels[state[g.key]]) state[g.key] = g.fallback;   // 持久化/导入的非法值兜底
+    for (const btn of els[g.bar].querySelectorAll('.tab-btn')) {
+      btn.classList.toggle('active', btn.dataset.tab === state[g.key]);
+    }
+    for (const [tab, el] of Object.entries(g.panels)) els[el].hidden = tab !== state[g.key];
   }
-  for (const [key, panel] of Object.entries(panels)) panel.hidden = key !== state.layerTab;
 }
 
-function bindLayerTabs() {
-  els.layerTabs.addEventListener('click', (e) => {
-    const btn = e.target.closest('.tab-btn');
-    if (!btn) return;
-    state.layerTab = btn.dataset.tab;
-    updateLayerTab();
-    saveOptions();
-  });
+function bindTabs() {
+  for (const g of TAB_GROUPS) {
+    els[g.bar].addEventListener('click', (e) => {
+      const btn = e.target.closest('.tab-btn');
+      if (!btn) return;
+      state[g.key] = btn.dataset.tab;
+      updateTabs();
+      saveOptions();
+    });
+  }
 }
 
 function syncInputsFromState() {
@@ -547,7 +560,7 @@ function syncInputsFromState() {
   els.viewToggle.classList.toggle('active', state.view === 'actual');
   renderStopsEditor();
   updateInnerControlsVisibility();
-  updateLayerTab();
+  updateTabs();
 }
 
 /* ---------- 内边距渐变控件 ---------- */
@@ -853,7 +866,7 @@ function bindControls() {
   numField(els.spanX, 'spanX', 1);
   numField(els.spanY, 'spanY', 1);
   bindMarginPads();
-  bindLayerTabs();
+  bindTabs();
 
   els.baseColor.addEventListener('input', () => { state.baseColor = els.baseColor.value; renderPreview(); saveOptions(); });
   els.baseOpacity.addEventListener('input', () => {
