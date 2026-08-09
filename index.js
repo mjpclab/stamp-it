@@ -36,8 +36,8 @@ const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY',
 const state = {
   d: 8,
   g: 4,
-  nx: 20,
-  ny: 14,
+  nx: 24,
+  ny: 16,
   matrixX: 1,                            // 矩阵列数
   matrixY: 1,                            // 矩阵行数
   spanX: 1,                              // 跨格单元列数：连续 spanX×spanY 格合成一张图（连票）
