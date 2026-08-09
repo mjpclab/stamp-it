@@ -7,12 +7,14 @@
  *   - 邮票矩形：Sw = nx*pitch, Sh = ny*pitch
  *   - 外边距 = d/2：画布 W = Sw+d, H = Sh+d，邮票矩形偏移 (d/2, d/2)
  *   - 齿孔：半径 d/2 的整圆，圆心落在邮票矩形边线上，按 pitch 间隔；边角圆形成四分之一孔
- *   - 内边距 = 四向各 N 个 pitch（默认 0.75）→ Cw=(nx-左-右)*pitch, Ch=(ny-上-下)*pitch
+ *   - 内边距 = 四向各 N 个 pitch（默认 0.75），作用于每个「跨格组」的外缘
+ *   - 跨格组 = 连续 spanX×spanY 格合成一张图（连票）：组内相邻格无内边距、画面连续，
+ *     仅被齿孔打断；spanX=spanY=1 时退化为逐格独立。不整除时末列/末行为残组
  *
  * 渲染顺序（离屏分层、自底向上合成，天然支持半透明导出）：
  *   1. base 底色层（baseColor@baseOpacity）—— 最底层，齿孔镂空处透出它
  *   2. sheet 外边距层（outerColor + outerImage cover，各自独立透明度）
- *   3. stamp 邮票层（内边距填充 纯色/线性/径向渐变 + innerImage cover + 各格照片），叠入 deco
+ *   3. stamp 邮票层（内边距填充 纯色/线性/径向渐变 + innerImage cover + 各跨格组照片），叠入 deco
  *   4. destination-out 在 deco 上打孔，穿透 sheet + stamp，露出底色 → 真实镂空
  *   5. 合成到目标：先 base，再叠 deco
  * 改用离屏分层（而非单次 destination-over）是为了让 outerOpacity/baseOpacity 保持均匀、
@@ -23,7 +25,7 @@ const DPR_LIMIT = 8;      // 预览缩放上限
 const ZOOM_STEP = 1.1;    // 每格滚轮缩放系数
 const MIN_PERF = 3;       // 齿孔数下限
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
-const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'baseColor', 'baseOpacity',
+const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY', 'baseColor', 'baseOpacity',
   'outerColor', 'outerColorOpacity', 'outerImageOpacity',
   'outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft',
   'innerMarginTop', 'innerMarginRight', 'innerMarginBottom', 'innerMarginLeft',
@@ -38,6 +40,8 @@ const state = {
   ny: 14,
   matrixX: 1,                            // 矩阵列数
   matrixY: 1,                            // 矩阵行数
+  spanX: 1,                              // 跨格单元列数：连续 spanX×spanY 格合成一张图（连票）
+  spanY: 1,                              // 跨格单元行数；1×1 = 逐格独立
   baseColor: '#000000',                  // 最底层底色：齿孔镂空处透出它
   baseOpacity: 1,                        // 底色透明度（调低可导出透明/半透明 PNG）
   outerColor: '#000000',
@@ -65,7 +69,7 @@ const state = {
   view: 'fit',              // 'fit' 适应窗口 | 'actual' 1:1 实际像素
   layerTab: 'inner',        // 图层设置标签页：'inner' | 'outer' | 'base'
   images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
-  crops: {},                // 每格独立裁剪：键 "c,r" → {scale, offsetX, offsetY}（session 态）
+  crops: {},                // 每跨格组独立裁剪：键 "c0,r0"（组起始格）→ {scale, offsetX, offsetY}
   outerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 外背景图缩放/平移（session 态）
   innerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 内背景图缩放/平移（session 态）
 };
@@ -74,9 +78,11 @@ const state = {
 const DEFAULTS = structuredClone(state);
 
 const IDENTITY_CROP = { scale: 1, offsetX: 0, offsetY: 0 };
-function getCrop(c, r) { return state.crops[c + ',' + r] || IDENTITY_CROP; }   // 只读，缺省返回共享单位裁剪
-function cellCrop(c, r) {                                                       // 取（并按需创建）可编辑的格裁剪
-  const k = c + ',' + r;
+// 裁剪按「跨格组」存储，键为组的起始格坐标 "c0,r0"；spanX=spanY=1 时即逐格，键与逐格模式一致。
+// 改动 span 后落单的旧键保留不删（切回原 span 自动复活）。
+function getCrop(c0, r0) { return state.crops[c0 + ',' + r0] || IDENTITY_CROP; }   // 只读，缺省返回共享单位裁剪
+function groupCrop(c0, r0) {                                                       // 取（并按需创建）可编辑的组裁剪
+  const k = c0 + ',' + r0;
   return state.crops[k] || (state.crops[k] = { scale: 1, offsetX: 0, offsetY: 0 });
 }
 
@@ -93,6 +99,10 @@ function computeGeometry(s) {
   const Sh = s.ny * pitch;
   const X = Math.max(1, Math.round(s.matrixX));
   const Y = Math.max(1, Math.round(s.matrixY));
+  const spanX = clamp(Math.round(s.spanX), 1, X);   // 跨格单元不超过矩阵尺寸
+  const spanY = clamp(Math.round(s.spanY), 1, Y);
+  const groupsX = Math.ceil(X / spanX);             // 跨格组数；不整除时末列/末行为残组
+  const groupsY = Math.ceil(Y / spanY);
   const blockW = X * Sw;              // 整个矩阵块
   const blockH = Y * Sh;
   const half = s.d / 2;                          // 半孔基准
@@ -106,21 +116,34 @@ function computeGeometry(s) {
   const iL = s.innerMarginLeft * pitch;
   return {
     d: s.d, pitch, Sw, Sh, X, Y, blockW, blockH,
+    spanX, spanY, groupsX, groupsY,
     W: blockW + mL + mR, H: blockH + mT + mB,
     mT, mR, mB, mL, iT, iR, iB, iL,
     blockX: mL, blockY: mT,
-    contentX: mL + iL, contentY: mT + iT,   // (0,0) 格内容区，供单图模式复用
-    Cw: Sw - iL - iR, Ch: Sh - iT - iB,     // 单格内容区尺寸
   };
 }
 
-// 第 (c,r) 格的内容区矩形
-function cellContent(geo, c, r) {
+// 第 (gc,gr) 个跨格组占据的格范围；末组按矩阵边界收窄 → 残组
+function groupRect(geo, gc, gr) {
+  const c0 = gc * geo.spanX;
+  const r0 = gr * geo.spanY;
+  return { c0, r0, cw: Math.min(geo.spanX, geo.X - c0), ch: Math.min(geo.spanY, geo.Y - r0) };
+}
+
+// 第 (gc,gr) 组的内容区矩形：内边距只作用于组的外缘，组内相邻格贴合 → 画面连续（连票）
+function groupContent(geo, gc, gr) {
+  const { c0, r0, cw, ch } = groupRect(geo, gc, gr);
   return {
-    x: geo.mL + c * geo.Sw + geo.iL,
-    y: geo.mT + r * geo.Sh + geo.iT,
-    w: geo.Cw, h: geo.Ch,
+    x: geo.mL + c0 * geo.Sw + geo.iL,
+    y: geo.mT + r0 * geo.Sh + geo.iT,
+    w: cw * geo.Sw - geo.iL - geo.iR,
+    h: ch * geo.Sh - geo.iT - geo.iB,
   };
+}
+
+// 第 (gc,gr) 组用哪张图：组索引行优先重复填充
+function groupImage(geo, gc, gr) {
+  return state.images[(gr * geo.groupsX + gc) % state.images.length];
 }
 
 function holeCenters(geo) {
@@ -166,14 +189,15 @@ function clampCropTo(crop, img, w, h) {
   crop.offsetY = clamp(crop.offsetY, -oy, oy);
 }
 
-// 钳制单格 crop 的 offset：保证该格图片铺满内容区
-function clampCropCell(c, r) {
+// 钳制单组 crop 的 offset：保证该组图片铺满内容区
+function clampCropGroup(gc, gr) {
   if (!state.images.length) return;
   const geo = computeGeometry(state);
-  if (geo.Cw <= 0 || geo.Ch <= 0) return;   // 内边距过大挤没内容区时跳过钳制
+  const content = groupContent(geo, gc, gr);
+  if (content.w <= 0 || content.h <= 0) return;   // 内边距过大挤没内容区时跳过钳制
 
-  const img = state.images[(r * geo.X + c) % state.images.length];
-  clampCropTo(cellCrop(c, r), img, geo.Cw, geo.Ch);
+  const { c0, r0 } = groupRect(geo, gc, gr);
+  clampCropTo(groupCrop(c0, r0), groupImage(geo, gc, gr), content.w, content.h);
 }
 
 // 钳制外背景图 crop：内容区为整张画布
@@ -190,13 +214,13 @@ function clampInnerCrop() {
   clampCropTo(state.innerCrop, state.innerImage, geo.blockW, geo.blockH);
 }
 
-// 几何变化后重新钳制所有已编辑过的格
+// 几何变化后重新钳制所有已编辑过的组
 function clampAllCrops() {
-  const X = Math.max(1, Math.round(state.matrixX));
-  const Y = Math.max(1, Math.round(state.matrixY));
-  for (let r = 0; r < Y; r++) {
-    for (let c = 0; c < X; c++) {
-      if (state.crops[c + ',' + r]) clampCropCell(c, r);
+  const geo = computeGeometry(state);
+  for (let gr = 0; gr < geo.groupsY; gr++) {
+    for (let gc = 0; gc < geo.groupsX; gc++) {
+      const { c0, r0 } = groupRect(geo, gc, gr);
+      if (state.crops[c0 + ',' + r0]) clampCropGroup(gc, gr);
     }
   }
   clampOuterCrop();
@@ -299,16 +323,17 @@ function render(targetCtx, scale) {
   deco.setTransform(1, 0, 0, 1, 0, 0);                 // 以设备像素叠入内边距层
   deco.drawImage(inner.canvas, 0, 0);
   deco.setTransform(scale, 0, 0, scale, 0, 0);          // 恢复几何坐标绘制照片
-  // 各格照片：按行优先顺序重复填充
-  const imgs = s.images;
-  if (imgs.length && geo.Cw > 0 && geo.Ch > 0) {
-    for (let r = 0; r < geo.Y; r++) {
-      for (let c = 0; c < geo.X; c++) {
-        const img = imgs[(r * geo.X + c) % imgs.length];
-        const cell = cellContent(geo, c, r);
+  // 各跨格组照片：按组的行优先顺序重复填充，一张图铺满整组（组内跨格连续）
+  if (s.images.length) {
+    for (let gr = 0; gr < geo.groupsY; gr++) {
+      for (let gc = 0; gc < geo.groupsX; gc++) {
+        const content = groupContent(geo, gc, gr);
+        if (content.w <= 0 || content.h <= 0) continue;   // 内边距挤没内容区
+        const img = groupImage(geo, gc, gr);
+        const { c0, r0 } = groupRect(geo, gc, gr);
         deco.save();
-        deco.beginPath(); deco.rect(cell.x, cell.y, cell.w, cell.h); deco.clip();
-        const dr = imageDrawRect(img, cell, getCrop(c, r));   // 每格独立 cover + 裁剪
+        deco.beginPath(); deco.rect(content.x, content.y, content.w, content.h); deco.clip();
+        const dr = imageDrawRect(img, content, getCrop(c0, r0));   // 每组独立 cover + 裁剪
         deco.drawImage(img, dr.x, dr.y, dr.w, dr.h);
         deco.restore();
       }
@@ -362,6 +387,8 @@ const els = {
   ny: document.getElementById('ny'),
   matrixX: document.getElementById('matrixX'),
   matrixY: document.getElementById('matrixY'),
+  spanX: document.getElementById('spanX'),
+  spanY: document.getElementById('spanY'),
   baseColor: document.getElementById('baseColor'),
   baseOpacity: document.getElementById('baseOpacity'),
   baseOpacityVal: document.getElementById('baseOpacityVal'),
@@ -491,6 +518,8 @@ function syncInputsFromState() {
   els.ny.value = state.ny;
   els.matrixX.value = state.matrixX;
   els.matrixY.value = state.matrixY;
+  els.spanX.value = state.spanX;
+  els.spanY.value = state.spanY;
   els.baseColor.value = state.baseColor;
   els.baseOpacity.value = state.baseOpacity;
   els.baseOpacityVal.textContent = Number(state.baseOpacity).toFixed(2);
@@ -821,6 +850,8 @@ function bindControls() {
   numField(els.ny, 'ny', MIN_PERF);
   numField(els.matrixX, 'matrixX', 1);
   numField(els.matrixY, 'matrixY', 1);
+  numField(els.spanX, 'spanX', 1);
+  numField(els.spanY, 'spanY', 1);
   bindMarginPads();
   bindLayerTabs();
 
@@ -920,26 +951,25 @@ function eventToGeo(e, geo) {
   };
 }
 
-// 由几何坐标定位所在格 {c, r}
-function cellAt(geo, gx, gy) {
-  return {
-    c: clamp(Math.floor((gx - geo.mL) / geo.Sw), 0, geo.X - 1),
-    r: clamp(Math.floor((gy - geo.mT) / geo.Sh), 0, geo.Y - 1),
-  };
+// 由几何坐标定位所在跨格组 {gc, gr}
+function groupAt(geo, gx, gy) {
+  const c = clamp(Math.floor((gx - geo.mL) / geo.Sw), 0, geo.X - 1);
+  const r = clamp(Math.floor((gy - geo.mT) / geo.Sh), 0, geo.Y - 1);
+  return { gc: Math.floor(c / geo.spanX), gr: Math.floor(r / geo.spanY) };
 }
 
-// 命中目标：块外→外图；块内按 Alt / 是否有照片 → 内图或某格；否则 null（不响应）
+// 命中目标：块外→外图；块内按 Alt / 是否有照片 → 内图或某跨格组；否则 null（不响应）
 // wantInner（按住 Alt）在块内优先指向内背景图，便于在照片之上调整内图
 function hitTarget(geo, gx, gy, wantInner) {
   const inBlock = gx >= geo.blockX && gx <= geo.blockX + geo.blockW &&
                   gy >= geo.blockY && gy <= geo.blockY + geo.blockH;
   if (!inBlock) return state.outerImage ? { type: 'outer' } : null;
   if (wantInner && state.innerImage) return { type: 'inner' };
-  if (state.images.length) return { type: 'cell', ...cellAt(geo, gx, gy) };
+  if (state.images.length) return { type: 'group', ...groupAt(geo, gx, gy) };
   return state.innerImage ? { type: 'inner' } : null;   // 无照片时块内直接调内图
 }
 
-// 目标 → {crop, img, content, doClamp}：统一 cell / outer / inner 三种拖拽缩放对象
+// 目标 → {crop, img, content, doClamp}：统一 group / outer / inner 三种拖拽缩放对象
 function cropContext(geo, t) {
   if (t.type === 'outer') {
     return {
@@ -957,11 +987,12 @@ function cropContext(geo, t) {
       doClamp: clampInnerCrop,
     };
   }
+  const { c0, r0 } = groupRect(geo, t.gc, t.gr);
   return {
-    crop: cellCrop(t.c, t.r),
-    img: state.images[(t.r * geo.X + t.c) % state.images.length],
-    content: cellContent(geo, t.c, t.r),
-    doClamp: () => clampCropCell(t.c, t.r),
+    crop: groupCrop(c0, r0),
+    img: groupImage(geo, t.gc, t.gr),
+    content: groupContent(geo, t.gc, t.gr),
+    doClamp: () => clampCropGroup(t.gc, t.gr),
   };
 }
 
@@ -975,7 +1006,7 @@ function bindCanvasInteractions() {
     const cur = eventToGeo(e, geo);
     const t = hitTarget(geo, cur.x, cur.y, e.altKey);
     if (!t) return;
-    dragTarget = t;                              // 拖动光标命中的对象（格 / 外图 / 内图）
+    dragTarget = t;                              // 拖动光标命中的对象（跨格组 / 外图 / 内图）
     dragging = true;
     last = { x: e.clientX, y: e.clientY };
     canvas.setPointerCapture(e.pointerId);
