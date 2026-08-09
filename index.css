@@ -27,7 +27,8 @@ body {
 
 /* ---- 控制面板 ---- */
 .panel {
-  width: 280px;
+  width: 340px;             /* 与 index.js 的 PANEL_W 保持一致；容得下 4 个页签不换行 */
+  scrollbar-gutter: stable; /* 始终预留滚动条槽：面板变高/变矮时可用宽不跳变，页签不会被挤压 */
   flex: none;
   background: var(--panel);
   border-right: 1px solid var(--line);
@@ -136,6 +137,8 @@ button.primary:hover { filter: brightness(1.08); }
   font-size: 13px;
   letter-spacing: 1px;
   cursor: pointer;
+  flex: none;               /* 宽度不足时不压缩页签，宁可溢出也不让标题折行 */
+  white-space: nowrap;
 }
 .tab-btn:hover { color: var(--text); }
 .tab-btn.active {

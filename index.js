@@ -8,13 +8,14 @@
  *   - 外边距 = d/2：画布 W = Sw+d, H = Sh+d，邮票矩形偏移 (d/2, d/2)
  *   - 齿孔：半径 d/2 的整圆，圆心落在邮票矩形边线上，按 pitch 间隔；边角圆形成四分之一孔
  *   - 内边距 = 四向各 N 个 pitch（默认 0.75），作用于每个「跨格组」的外缘
+ *   - 边框 = 内边距内缘的实线框（粗细/间距均为像素）；图片再内缩「粗细 + 间距」
  *   - 跨格组 = 连续 spanX×spanY 格合成一张图（连票）：组内相邻格无内边距、画面连续，
  *     仅被齿孔打断；spanX=spanY=1 时退化为逐格独立。不整除时末列/末行为残组
  *
  * 渲染顺序（离屏分层、自底向上合成，天然支持半透明导出）：
  *   1. base 底色层（baseColor@baseOpacity）—— 最底层，齿孔镂空处透出它
  *   2. sheet 外边距层（outerColor + outerImage cover，各自独立透明度）
- *   3. stamp 邮票层（内边距填充 纯色/线性/径向渐变 + innerImage cover + 各跨格组照片），叠入 deco
+ *   3. stamp 邮票层（内边距填充 纯色/线性/径向渐变 + innerImage cover + 各跨格组照片 + 各组边框），叠入 deco
  *   4. destination-out 在 deco 上打孔，穿透 sheet + stamp，露出底色 → 真实镂空
  *   5. 合成到目标：先 base，再叠 deco
  * 改用离屏分层（而非单次 destination-over）是为了让 outerOpacity/baseOpacity 保持均匀、
@@ -24,11 +25,13 @@
 const DPR_LIMIT = 8;      // 预览缩放上限
 const ZOOM_STEP = 1.1;    // 每格滚轮缩放系数
 const MIN_PERF = 3;       // 齿孔数下限
+const PANEL_W = 340;      // 控制面板宽度（与 index.css .panel 保持一致）
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
 const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY', 'baseColor', 'baseOpacity',
   'outerColor', 'outerColorOpacity', 'outerImageOpacity',
   'outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft',
   'innerMarginTop', 'innerMarginRight', 'innerMarginBottom', 'innerMarginLeft',
+  'borderWidth', 'borderGap', 'borderColor', 'borderOpacity',
   'innerColor', 'innerColorOpacity', 'innerImageOpacity', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
   'exportScale', 'view', 'stampTab', 'layerTab',
   'crops', 'outerCrop', 'innerCrop'];   // 裁剪元数据随选项落盘；图片本体走 IndexedDB
@@ -55,6 +58,10 @@ const state = {
   innerMarginRight: 0.75,
   innerMarginBottom: 0.75,
   innerMarginLeft: 0.75,
+  borderWidth: 0,                        // 组边框粗细（像素）：0 = 不画边框
+  borderGap: 0,                          // 边框到图片的留白（像素）：内边距里的另一层内边距
+  borderColor: '#ffffff',
+  borderOpacity: 1,
   outerImage: null,                      // 外边距背景图（session 态，不持久化）
   innerImage: null,                      // 内边距背景图（session 态，不持久化）
   innerColor: '#d4af37',                 // 纯色模式用色
@@ -115,11 +122,13 @@ function computeGeometry(s) {
   const iR = s.innerMarginRight * pitch;
   const iB = s.innerMarginBottom * pitch;
   const iL = s.innerMarginLeft * pitch;
+  const bw = Math.max(0, s.borderWidth);         // 边框粗细（像素）
+  const bg = Math.max(0, s.borderGap);           // 边框到图片的留白（像素）
   return {
     d: s.d, pitch, Sw, Sh, X, Y, blockW, blockH,
     spanX, spanY, groupsX, groupsY,
     W: blockW + mL + mR, H: blockH + mT + mB,
-    mT, mR, mB, mL, iT, iR, iB, iL,
+    mT, mR, mB, mL, iT, iR, iB, iL, bw, bg,
     blockX: mL, blockY: mT,
   };
 }
@@ -131,8 +140,8 @@ function groupRect(geo, gc, gr) {
   return { c0, r0, cw: Math.min(geo.spanX, geo.X - c0), ch: Math.min(geo.spanY, geo.Y - r0) };
 }
 
-// 第 (gc,gr) 组的内容区矩形：内边距只作用于组的外缘，组内相邻格贴合 → 画面连续（连票）
-function groupContent(geo, gc, gr) {
+// 第 (gc,gr) 组的边框矩形（= 内边距内缘）：内边距只作用于组的外缘，组内相邻格贴合 → 画面连续（连票）
+function groupFrame(geo, gc, gr) {
   const { c0, r0, cw, ch } = groupRect(geo, gc, gr);
   return {
     x: geo.mL + c0 * geo.Sw + geo.iL,
@@ -140,6 +149,13 @@ function groupContent(geo, gc, gr) {
     w: cw * geo.Sw - geo.iL - geo.iR,
     h: ch * geo.Sh - geo.iT - geo.iB,
   };
+}
+
+// 第 (gc,gr) 组的图片内容区：边框矩形再内缩「边框粗细 + 边框间距」
+function groupContent(geo, gc, gr) {
+  const f = groupFrame(geo, gc, gr);
+  const inset = geo.bw + geo.bg;
+  return { x: f.x + inset, y: f.y + inset, w: f.w - 2 * inset, h: f.h - 2 * inset };
 }
 
 // 第 (gc,gr) 组用哪张图：组索引行优先重复填充
@@ -340,6 +356,22 @@ function render(targetCtx, scale) {
       }
     }
   }
+  // 各组边框：实线，贴内边距内缘向内画（图片已内缩「粗细 + 间距」，故不会被覆盖）
+  if (geo.bw > 0 && s.borderOpacity > 0) {
+    deco.save();
+    deco.globalAlpha = s.borderOpacity;
+    deco.strokeStyle = s.borderColor;
+    for (let gr = 0; gr < geo.groupsY; gr++) {
+      for (let gc = 0; gc < geo.groupsX; gc++) {
+        const f = groupFrame(geo, gc, gr);
+        if (f.w <= 0 || f.h <= 0) continue;              // 内边距挤没整个组
+        const t = Math.min(geo.bw, f.w / 2, f.h / 2);    // 过粗时退化为实心块，不越界
+        deco.lineWidth = t;
+        deco.strokeRect(f.x + t / 2, f.y + t / 2, f.w - t, f.h - t);
+      }
+    }
+    deco.restore();
+  }
   // 打孔：穿透外边距层 + 邮票层 → 透明，露出底层底色（完整镂空）
   deco.globalCompositeOperation = 'destination-out';
   deco.fillStyle = '#000';
@@ -364,7 +396,7 @@ function render(targetCtx, scale) {
 
 function previewScale(geo) {
   if (state.view === 'actual') return 1;     // 1:1 实际几何像素
-  const availW = Math.max(50, window.innerWidth - 280 - 80);
+  const availW = Math.max(50, window.innerWidth - PANEL_W - 80);
   const availH = Math.max(50, window.innerHeight - 140);
   // 适应窗口：始终缩放到可视区域内（不设下限，避免大尺寸出现滚动条），仅限制放大上限
   return Math.min(Math.min(availW / geo.W, availH / geo.H), DPR_LIMIT);
@@ -410,10 +442,16 @@ const els = {
   innerMarginLeft: document.getElementById('innerMarginLeft'),
   innerMarginAll: document.getElementById('innerMarginAll'),
   innerMarginHint: document.getElementById('innerMarginHint'),
+  borderWidth: document.getElementById('borderWidth'),
+  borderGap: document.getElementById('borderGap'),
+  borderColor: document.getElementById('borderColor'),
+  borderOpacity: document.getElementById('borderOpacity'),
+  borderOpacityVal: document.getElementById('borderOpacityVal'),
   stampTabs: document.getElementById('stampTabs'),
   tabMatrix: document.getElementById('tab-matrix'),
   tabPerf: document.getElementById('tab-perf'),
   layerTabs: document.getElementById('layerTabs'),
+  tabBorder: document.getElementById('tab-border'),
   tabInner: document.getElementById('tab-inner'),
   tabOuter: document.getElementById('tab-outer'),
   tabBase: document.getElementById('tab-base'),
@@ -499,7 +537,7 @@ function syncMarginPads() {
 // 每组：选中态存在哪个 state 键、页签栏元素、各页签 → 面板元素；新增一组只需在此登记
 const TAB_GROUPS = [
   { key: 'stampTab', bar: 'stampTabs', fallback: 'matrix', panels: { matrix: 'tabMatrix', perf: 'tabPerf' } },
-  { key: 'layerTab', bar: 'layerTabs', fallback: 'inner', panels: { inner: 'tabInner', outer: 'tabOuter', base: 'tabBase' } },
+  { key: 'layerTab', bar: 'layerTabs', fallback: 'inner', panels: { border: 'tabBorder', inner: 'tabInner', outer: 'tabOuter', base: 'tabBase' } },
 ];
 
 function updateTabs() {
@@ -543,6 +581,11 @@ function syncInputsFromState() {
   els.outerImageOpacityVal.textContent = Number(state.outerImageOpacity).toFixed(2);
   syncMarginPads();
   updateMarginHints();
+  els.borderWidth.value = state.borderWidth;
+  els.borderGap.value = state.borderGap;
+  els.borderColor.value = state.borderColor;
+  els.borderOpacity.value = state.borderOpacity;
+  els.borderOpacityVal.textContent = Number(state.borderOpacity).toFixed(2);
   els.innerColor.value = state.innerColor;
   els.innerColorOpacity.value = state.innerColorOpacity;
   els.innerColorOpacityVal.textContent = Number(state.innerColorOpacity).toFixed(2);
@@ -865,6 +908,8 @@ function bindControls() {
   numField(els.matrixY, 'matrixY', 1);
   numField(els.spanX, 'spanX', 1);
   numField(els.spanY, 'spanY', 1);
+  numField(els.borderWidth, 'borderWidth', 0);   // 边框粗细/间距挤压图片内容区 → 需重新钳制裁剪
+  numField(els.borderGap, 'borderGap', 0);
   bindMarginPads();
   bindTabs();
 
@@ -872,6 +917,13 @@ function bindControls() {
   els.baseOpacity.addEventListener('input', () => {
     state.baseOpacity = parseFloat(els.baseOpacity.value);
     els.baseOpacityVal.textContent = state.baseOpacity.toFixed(2);
+    renderPreview();
+    saveOptions();
+  });
+  els.borderColor.addEventListener('input', () => { state.borderColor = els.borderColor.value; renderPreview(); saveOptions(); });
+  els.borderOpacity.addEventListener('input', () => {
+    state.borderOpacity = parseFloat(els.borderOpacity.value);
+    els.borderOpacityVal.textContent = state.borderOpacity.toFixed(2);
     renderPreview();
     saveOptions();
   });
