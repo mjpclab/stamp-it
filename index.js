@@ -299,11 +299,13 @@ function fillStyle(targetCtx, geo, p) {
 /* ---------- 渲染 ---------- */
 
 // 建一个与目标等尺寸、已套好 scale 变换的离屏图层
+// 照片/背景图的 drawImage 全在离屏层上发生，故重采样质量设在这里即可覆盖三处
 function layerCanvas(geo, scale) {
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(geo.W * scale));
   c.height = Math.max(1, Math.round(geo.H * scale));
   const cx = c.getContext('2d');
+  cx.imageSmoothingQuality = 'high';
   cx.setTransform(scale, 0, 0, scale, 0, 0);
   return cx;
 }
@@ -314,6 +316,7 @@ function render(targetCtx, scale) {
   const cv = targetCtx.canvas;
   cv.width = Math.max(1, Math.round(geo.W * scale));
   cv.height = Math.max(1, Math.round(geo.H * scale));
+  targetCtx.imageSmoothingQuality = 'high';   // 必须在改 canvas 尺寸之后设：改尺寸会重置上下文状态
 
   // --- 外边距层 sheet：外色/渐变(@outerColorOpacity) + 外背景图 cover(@outerImageOpacity) 各自独立透明度 ---
   const sheet = layerCanvas(geo, scale);
