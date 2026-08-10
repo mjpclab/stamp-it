@@ -25,7 +25,6 @@
 const DPR_LIMIT = 8;      // 预览缩放上限
 const ZOOM_STEP = 1.1;    // 每格滚轮缩放系数
 const MIN_PERF = 3;       // 齿孔数下限
-const PANEL_W = 340;      // 控制面板宽度（与 index.css .panel 保持一致）
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
 const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY', 'baseColor', 'baseOpacity',
   'outerColor', 'outerColorOpacity', 'outerImageOpacity', 'outerFill', 'outerStops', 'outerAngle', 'outerOriginX', 'outerOriginY',
@@ -33,7 +32,7 @@ const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY',
   'innerMarginTop', 'innerMarginRight', 'innerMarginBottom', 'innerMarginLeft',
   'borderWidth', 'borderGap', 'borderColor', 'borderOpacity',
   'innerColor', 'innerColorOpacity', 'innerImageOpacity', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
-  'exportScale', 'view', 'stampTab', 'layerTab',
+  'exportScale', 'view', 'stampTab', 'layerTab', 'dragTarget',
   'crops', 'outerCrop', 'innerCrop'];   // 裁剪元数据随选项落盘；图片本体走 IndexedDB
 
 const state = {
@@ -81,6 +80,9 @@ const state = {
   view: 'fit',              // 'fit' 适应窗口 | 'actual' 1:1 实际像素
   stampTab: 'matrix',       // 照片与齿孔标签页：'matrix' | 'perf'
   layerTab: 'inner',        // 图层设置标签页：'inner' | 'outer' | 'base'
+  // 拖拽/缩放作用对象：'auto' 按位置与 Alt 键推断（原行为）| 'photo' | 'inner' | 'outer' 强制锁定
+  // 触摸设备没有 Alt 键，锁定项是访问内背景图的唯一入口
+  dragTarget: 'auto',
   images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
   crops: {},                // 每跨格组独立裁剪：键 "c0,r0"（组起始格）→ {scale, offsetX, offsetY}
   outerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 外背景图缩放/平移（session 态）
@@ -407,17 +409,38 @@ function render(targetCtx, scale) {
   targetCtx.drawImage(deco.canvas, 0, 0);
 }
 
+// 画布可视区实测尺寸（.canvas-area 由 flex 撑开，与面板宽度/抽屉高度无关）
+function stageAvail() {
+  return {
+    w: Math.max(50, els.canvasArea.clientWidth),
+    h: Math.max(50, els.canvasArea.clientHeight),
+  };
+}
+
+let lastAvail = null;   // 上次渲染所用的可视区尺寸，供 ResizeObserver 去重（见 bindStageResize）
+
 function previewScale(geo) {
   if (state.view === 'actual') return 1;     // 1:1 实际几何像素
-  const availW = Math.max(50, window.innerWidth - PANEL_W - 80);
-  const availH = Math.max(50, window.innerHeight - 140);
+  const { w, h } = stageAvail();
   // 适应窗口：始终缩放到可视区域内（不设下限，避免大尺寸出现滚动条），仅限制放大上限
-  return Math.min(Math.min(availW / geo.W, availH / geo.H), DPR_LIMIT);
+  return Math.min(w / geo.W, h / geo.H, DPR_LIMIT);
 }
 
 function renderPreview() {
   const geo = computeGeometry(state);
+  lastAvail = stageAvail();
+  updateDragTargetSeg();
   render(ctx, previewScale(geo));
+}
+
+// 可视区尺寸变化即重渲染：涵盖窗口缩放、横竖屏切换、抽屉开合、软键盘弹出
+// 去重是必需的：1:1 视图下重渲染可能引起滚动条出现/消失，进而改变 content-box 尺寸，形成回调环
+function bindStageResize() {
+  new ResizeObserver(() => {
+    const { w, h } = stageAvail();
+    if (lastAvail && lastAvail.w === w && lastAvail.h === h) return;
+    renderPreview();
+  }).observe(els.canvasArea);
 }
 
 /* ---------- 控件 ---------- */
@@ -487,6 +510,9 @@ const els = {
   schemeInput: document.getElementById('schemeInput'),
   schemeInfo: document.getElementById('schemeInfo'),
   viewToggle: document.getElementById('viewToggle'),
+  canvasArea: document.getElementById('canvasArea'),
+  drawerHandle: document.getElementById('drawerHandle'),
+  dragTargetSeg: document.getElementById('dragTargetSeg'),
 };
 
 // 两组填充控件的 id 一律「前缀 + 后缀」，逐组补进 els（内/外各一套，结构完全对称）
@@ -567,6 +593,50 @@ function bindTabs() {
   }
 }
 
+/* ---------- 拖拽/缩放目标切换器 ---------- */
+
+// 各目标是否可用（对应图片存在才可锁定）；'auto' 恒可用
+const DRAG_TARGET_READY = {
+  auto: () => true,
+  photo: () => state.images.length > 0,
+  inner: () => !!state.innerImage,
+  outer: () => !!state.outerImage,
+};
+
+let dragSegSig = null;   // 上次写入 DOM 的状态签名，避免逐帧重复写（renderPreview 每帧都会调用）
+
+function updateDragTargetSeg() {
+  if (!DRAG_TARGET_READY[state.dragTarget]) state.dragTarget = 'auto';   // 持久化/导入的非法值兜底
+  const sig = [state.dragTarget, state.images.length > 0, !!state.innerImage, !!state.outerImage].join('|');
+  if (sig === dragSegSig) return;
+  dragSegSig = sig;
+  for (const btn of els.dragTargetSeg.querySelectorAll('.seg-btn')) {
+    const t = btn.dataset.target;
+    btn.classList.toggle('active', t === state.dragTarget);
+    btn.disabled = !DRAG_TARGET_READY[t]();
+  }
+}
+
+function bindDragTargetSeg() {
+  els.dragTargetSeg.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn || btn.disabled) return;
+    state.dragTarget = btn.dataset.target;
+    updateDragTargetSeg();
+    saveOptions();
+  });
+}
+
+/* ---------- 底部抽屉（窄屏） ---------- */
+
+// 抽屉开合改变 .panel 高度 → .canvas-area 尺寸变化 → ResizeObserver 自动重渲染
+function bindDrawer() {
+  els.drawerHandle.addEventListener('click', () => {
+    const open = document.body.classList.toggle('drawer-open');
+    els.drawerHandle.setAttribute('aria-expanded', String(open));
+  });
+}
+
 function syncInputsFromState() {
   els.holeD.value = state.d;
   els.holeG.value = state.g;
@@ -599,6 +669,7 @@ function syncInputsFromState() {
   els.viewToggle.textContent = state.view === 'fit' ? '1:1 视图' : '适应窗口';
   els.viewToggle.classList.toggle('active', state.view === 'actual');
   updateTabs();
+  updateDragTargetSeg();
 }
 
 /* ---------- 填充控件（内/外边距共用） ---------- */
@@ -1021,12 +1092,16 @@ function bindControls() {
 
 /* ---------- 画布交互：拖拽 + 光标锚点缩放 ---------- */
 
-function eventToGeo(e, geo) {
+function clientToGeo(clientX, clientY, geo) {
   const rect = canvas.getBoundingClientRect();
   return {
-    x: (e.clientX - rect.left) / rect.width * geo.W,
-    y: (e.clientY - rect.top) / rect.height * geo.H,
+    x: (clientX - rect.left) / rect.width * geo.W,
+    y: (clientY - rect.top) / rect.height * geo.H,
   };
+}
+
+function eventToGeo(e, geo) {
+  return clientToGeo(e.clientX, e.clientY, geo);
 }
 
 // 由几何坐标定位所在跨格组 {gc, gr}
@@ -1038,10 +1113,19 @@ function groupAt(geo, gx, gy) {
 
 // 命中目标：块外→外图；块内按 Alt / 是否有照片 → 内图或某跨格组；否则 null（不响应）
 // wantInner（按住 Alt）在块内优先指向内背景图，便于在照片之上调整内图
+// state.dragTarget 非 'auto' 时强制锁定该对象（触摸设备无 Alt 键的替代入口）；
+// 锁定对象的图片不存在时退回 'auto'，避免手势彻底失灵（图片回来后锁定自动生效）
 function hitTarget(geo, gx, gy, wantInner) {
+  const ready = DRAG_TARGET_READY[state.dragTarget];              // 非法值（导入的旧方案）当 'auto'
+  const forced = ready && ready() ? state.dragTarget : 'auto';
+  if (forced === 'outer') return { type: 'outer' };
+
   const inBlock = gx >= geo.blockX && gx <= geo.blockX + geo.blockW &&
                   gy >= geo.blockY && gy <= geo.blockY + geo.blockH;
   if (!inBlock) return state.outerImage ? { type: 'outer' } : null;
+  if (forced === 'inner') return { type: 'inner' };
+  if (forced === 'photo') return { type: 'group', ...groupAt(geo, gx, gy) };
+
   if (wantInner && state.innerImage) return { type: 'inner' };
   if (state.images.length) return { type: 'group', ...groupAt(geo, gx, gy) };
   return state.innerImage ? { type: 'inner' } : null;   // 无照片时块内直接调内图
@@ -1074,28 +1158,91 @@ function cropContext(geo, t) {
   };
 }
 
+// 以 anchor（几何坐标）为锚点把目标缩放 factor 倍，使锚点下的像素保持不动
+// 返回是否真的变化（已到 1–5 倍钳位边界则不变，调用方据此跳过重渲染）
+// 滚轮与双指捏合共用：前者 factor 是固定步进，后者是双指距离比值
+function zoomAt(geo, t, factor, anchor) {
+  const { crop, img, content, doClamp } = cropContext(geo, t);
+  if (!img) return false;
+  const newScale = clamp(crop.scale * factor, 1, 5);
+  if (newScale === crop.scale) return false;
+
+  const base = coverScale(img, content.w, content.h);
+  const before = imageDrawRect(img, content, crop);
+  const effOld = base * crop.scale;
+  const imgX = (anchor.x - before.x) / effOld;     // 锚点处对应的图片自身坐标
+  const imgY = (anchor.y - before.y) / effOld;
+
+  crop.scale = newScale;
+  const effNew = base * newScale;
+  // 反推 offset，使锚点下像素保持不动
+  const w = img.naturalWidth * effNew;
+  const h = img.naturalHeight * effNew;
+  crop.offsetX = (anchor.x + w / 2 - imgX * effNew) - (content.x + content.w / 2);
+  crop.offsetY = (anchor.y + h / 2 - imgY * effNew) - (content.y + content.h / 2);
+
+  doClamp();
+  return true;
+}
+
 function bindCanvasInteractions() {
-  let dragging = false;
-  let dragTarget = null;
-  let last = null;
+  const pointers = new Map();   // pointerId → {x, y}（clientX/Y）：1 指平移，2 指捏合缩放
+  let target = null;            // 当前手势作用对象（跨格组 / 外图 / 内图）
+  let last = null;              // 上一次单指位置，null = 当前不平移
+  let pinchDist = 0;            // 上一次双指距离，0 = 未在捏合
+
+  const twoPointers = () => {
+    const [a, b] = [...pointers.values()];
+    return { a, b };
+  };
+  const pinchMid = () => {
+    const { a, b } = twoPointers();
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  };
+  const pinchSpan = () => {
+    const { a, b } = twoPointers();
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
 
   canvas.addEventListener('pointerdown', (e) => {
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const geo = computeGeometry(state);
-    const cur = eventToGeo(e, geo);
-    const t = hitTarget(geo, cur.x, cur.y, e.altKey);
-    if (!t) return;
-    dragTarget = t;                              // 拖动光标命中的对象（跨格组 / 外图 / 内图）
-    dragging = true;
-    last = { x: e.clientX, y: e.clientY };
-    canvas.setPointerCapture(e.pointerId);
+
+    if (pointers.size === 1) {
+      const cur = eventToGeo(e, geo);
+      target = hitTarget(geo, cur.x, cur.y, e.altKey);
+      last = target ? { x: e.clientX, y: e.clientY } : null;
+      if (target) canvas.setPointerCapture(e.pointerId);   // 拖到画布外仍继续
+      return;
+    }
+    // 第二指落下：按双指中点重新命中，进入捏合（期间不平移）
+    // 三指及以上不做手势，但仍重算基准，抬回双指时不跳变
+    const mid = pinchMid();
+    const g = clientToGeo(mid.x, mid.y, geo);
+    target = hitTarget(geo, g.x, g.y, e.altKey);
+    pinchDist = pinchSpan();
+    last = null;
   });
 
   canvas.addEventListener('pointermove', (e) => {
-    if (!dragging) return;
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (!target || pointers.size > 2) return;
     const geo = computeGeometry(state);
+
+    if (pointers.size === 2) {
+      const span = pinchSpan();
+      if (!pinchDist || !span) { pinchDist = span; return; }
+      const mid = pinchMid();
+      if (zoomAt(geo, target, span / pinchDist, clientToGeo(mid.x, mid.y, geo))) renderPreview();
+      pinchDist = span;
+      return;
+    }
+
+    if (!last) return;
     const rect = canvas.getBoundingClientRect();
     const ratio = geo.W / rect.width;            // CSS px → 几何 px
-    const { crop, doClamp } = cropContext(geo, dragTarget);
+    const { crop, doClamp } = cropContext(geo, target);
     crop.offsetX += (e.clientX - last.x) * ratio;
     crop.offsetY += (e.clientY - last.y) * ratio;
     last = { x: e.clientX, y: e.clientY };
@@ -1103,14 +1250,32 @@ function bindCanvasInteractions() {
     renderPreview();
   });
 
-  const endDrag = (e) => {
-    if (!dragging) return;
-    dragging = false;
+  const endPointer = (e) => {
+    if (!pointers.delete(e.pointerId)) return;
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-    saveOptions();   // 拖拽结束落盘最终裁剪（避免 pointermove 每帧写盘）
+    const had = target;
+
+    if (pointers.size >= 2) {
+      pinchDist = pinchSpan();   // 三指抬回双指：重算基准
+      last = null;
+      return;
+    }
+    if (pointers.size === 1) {
+      // 捏合退回单指：以余下那指为新基准，避免图片跳跃
+      const [p] = [...pointers.values()];
+      last = target ? { x: p.x, y: p.y } : null;
+      pinchDist = 0;
+      return;
+    }
+    if (pointers.size === 0) {
+      target = null;
+      last = null;
+      pinchDist = 0;
+      if (had) saveOptions();   // 手势全部结束才落盘（避免 pointermove 每帧写盘）
+    }
   };
-  canvas.addEventListener('pointerup', endDrag);
-  canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
 
   canvas.addEventListener('wheel', (e) => {
     const geo = computeGeometry(state);
@@ -1118,25 +1283,7 @@ function bindCanvasInteractions() {
     const t = hitTarget(geo, cursor.x, cursor.y, e.altKey);   // 只缩放光标命中的对象
     if (!t) return;
     e.preventDefault();
-    const { crop, img, content, doClamp } = cropContext(geo, t);
-    const newScale = clamp(crop.scale * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), 1, 5);
-    if (newScale === crop.scale) return;
-
-    const base = coverScale(img, content.w, content.h);
-    const before = imageDrawRect(img, content, crop);
-    const effOld = base * crop.scale;
-    const imgX = (cursor.x - before.x) / effOld;     // 光标处对应的图片自身坐标
-    const imgY = (cursor.y - before.y) / effOld;
-
-    crop.scale = newScale;
-    const effNew = base * newScale;
-    // 反推 offset，使光标下像素保持不动
-    const w = img.naturalWidth * effNew;
-    const h = img.naturalHeight * effNew;
-    crop.offsetX = (cursor.x + w / 2 - imgX * effNew) - (content.x + content.w / 2);
-    crop.offsetY = (cursor.y + h / 2 - imgY * effNew) - (content.y + content.h / 2);
-
-    doClamp();
+    if (!zoomAt(geo, t, e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, cursor)) return;
     renderPreview();
     saveOptions();   // 滚轮缩放后落盘裁剪
   }, { passive: false });
@@ -1372,7 +1519,9 @@ loadOptions();
 bindControls();
 bindCanvasInteractions();
 bindDragDrop();
+bindDragTargetSeg();
+bindDrawer();
 syncInputsFromState();
 renderPreview();
-restoreImages();   // 异步从 IndexedDB 还原图片，就绪后重渲染
-window.addEventListener('resize', renderPreview);
+bindStageResize();   // 取代 window.resize：可视区尺寸变化（含抽屉开合、横竖屏）即重渲染
+restoreImages();     // 异步从 IndexedDB 还原图片，就绪后重渲染

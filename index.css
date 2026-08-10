@@ -22,12 +22,12 @@ body {
 
 .app {
   display: flex;
-  height: 100vh;
+  height: 100dvh;           /* dvh：移动端地址栏收放时不裁掉底部 */
 }
 
 /* ---- 控制面板 ---- */
 .panel {
-  width: 340px;             /* 与 index.js 的 PANEL_W 保持一致；容得下 4 个页签不换行 */
+  width: 340px;             /* 容得下 4 个页签不换行 */
   scrollbar-gutter: stable; /* 始终预留滚动条槽：面板变高/变矮时可用宽不跳变，页签不会被挤压 */
   flex: none;
   background: var(--panel);
@@ -251,20 +251,60 @@ button.stop-del:disabled { opacity: 0.35; cursor: not-allowed; }
 /* ---- 预览区 ---- */
 .stage {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 24px;
+  overflow: hidden;         /* 滚动交给 .canvas-area，工具栏与提示行固定 */
+}
+
+/* 画布可视区：previewScale 直接实测本元素，故不必再猜面板宽度 */
+.canvas-area {
+  flex: 1;
+  align-self: stretch;
+  min-height: 0;
+  display: flex;
   align-items: safe center;
   justify-content: safe center;
-  gap: 16px;
-  overflow: auto;
-  padding: 24px;
+  overflow: auto;           /* 1:1 视图下画布超出时在此滚动 */
 }
 
 .stage-bar {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex: none;
 }
+
+/* ---- 拖拽/缩放目标切换（自动 / 照片 / 内图 / 外图） ---- */
+.seg {
+  display: flex;
+  gap: 0;
+}
+.seg-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-left-width: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.seg-btn:first-child { border-left-width: 1px; border-radius: 6px 0 0 6px; }
+.seg-btn:last-child { border-radius: 0 6px 6px 0; }
+.seg-btn:hover:not(:disabled) { color: var(--text); }
+.seg-btn.active {
+  background: var(--accent);
+  color: #2b2300;
+  border-color: var(--accent);
+  border-left-width: 1px;   /* 选中态补回左边框，负外边距抵掉多出的 1px 保持不位移 */
+  margin-left: -1px;
+}
+.seg-btn.active:first-child { margin-left: 0; }
+.seg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 button.ghost {
   background: transparent;
@@ -305,9 +345,86 @@ button.ghost.active {
 
 .stage-hint { text-align: center; }
 
+/* 桌面/触摸两套操作提示互斥显示 */
+.touch-only { display: none; }
+
+/* 抽屉把手：窄屏才出现 */
+.drawer-handle { display: none; }
+
 /* 拖放图片时的提示 */
 body.dragging .stage {
   outline: 2px dashed var(--accent);
   outline-offset: -12px;
   background: rgba(212, 175, 55, 0.05);
+}
+
+/* ==== 窄屏（手机 / 竖屏平板）：预览在上，控制面板收为底部抽屉 ==== */
+@media (max-width: 860px) {
+  /* DOM 顺序是 面板 → 把手 → 预览，倒序排布即得 预览 → 把手 → 面板 */
+  .app {
+    flex-direction: column-reverse;
+  }
+
+  .stage { padding: 10px; gap: 10px; }
+
+  .desktop-only { display: none; }
+  .touch-only { display: block; }
+
+  .drawer-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex: none;
+    width: 100%;
+    min-height: 44px;
+    background: var(--panel);
+    border: none;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 13px;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+  .drawer-grip {
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--card-line);
+  }
+
+  .panel {
+    width: 100%;
+    height: 58dvh;
+    padding: 14px;
+    gap: 18px;
+    border-right: none;
+  }
+  /* 收起态：面板整体让位给画布，只留把手 */
+  body:not(.drawer-open) .panel {
+    height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+  }
+
+  /* iOS Safari 对 font-size < 16px 的表单控件在聚焦时会自动放大页面 */
+  input[type="number"],
+  select {
+    font-size: 16px;
+    min-height: 44px;
+  }
+  input[type="color"] { height: 44px; }
+
+  /* 触摸热区 ≥ 44px */
+  .tab-btn { min-height: 44px; }
+  button.ghost.small { min-height: 40px; padding: 8px 12px; }
+  button.stop-del { width: 34px; height: 34px; }
+  input[type="range"] { height: 32px; }
+  .stop-row input[type="color"] { width: 48px; height: 34px; }   /* 比 .stop-row 基础规则更具体，需单独放大 */
+
+  .margin-pad { max-width: none; }
+
+  .stage-bar { flex-wrap: wrap; justify-content: center; }
+  .seg-btn { padding: 8px 12px; }
 }

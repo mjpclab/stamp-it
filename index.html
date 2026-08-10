@@ -6,9 +6,9 @@
   <title>邮票化小工具</title>
   <link rel="stylesheet" href="index.css">
 </head>
-<body>
+<body class="drawer-open">
   <div class="app">
-    <aside class="panel">
+    <aside class="panel" id="panel">
       <h1>邮票化</h1>
 
       <!-- 由内到外：照片 → 边框 → 内边距 → 齿孔 → 外边距 → 底色 -->
@@ -229,14 +229,29 @@
       </section>
     </aside>
 
+    <!-- 抽屉把手：仅窄屏可见，与 .panel/.stage 同为 .app 的 flex 子项（不随面板滚动） -->
+    <button class="drawer-handle" id="drawerHandle" type="button" aria-expanded="true" aria-controls="panel">
+      <span class="drawer-grip" aria-hidden="true"></span>
+      <span class="drawer-label">设置</span>
+    </button>
+
     <main class="stage">
       <div class="stage-bar">
         <button id="viewToggle" class="ghost" type="button">1:1 视图</button>
+        <div class="seg" id="dragTargetSeg" role="group" aria-label="拖拽/缩放调整对象">
+          <button class="seg-btn active" type="button" data-target="auto">自动</button>
+          <button class="seg-btn" type="button" data-target="photo">照片</button>
+          <button class="seg-btn" type="button" data-target="inner">内图</button>
+          <button class="seg-btn" type="button" data-target="outer">外图</button>
+        </div>
       </div>
-      <div class="canvas-wrap">
-        <canvas id="preview"></canvas>
+      <div class="canvas-area" id="canvasArea">
+        <div class="canvas-wrap">
+          <canvas id="preview"></canvas>
+        </div>
       </div>
-      <p class="hint stage-hint">拖拽平移照片 · 滚轮以光标为锚点缩放 · 外边距区域调外背景图 · 按住 Alt/Option 调内背景图</p>
+      <p class="hint stage-hint desktop-only">拖拽平移照片 · 滚轮以光标为锚点缩放 · 外边距区域调外背景图 · 按住 Alt/Option 调内背景图</p>
+      <p class="hint stage-hint touch-only">单指拖拽平移 · 双指捏合缩放 · 用上方按钮切换调整对象</p>
     </main>
   </div>
 
