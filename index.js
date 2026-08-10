@@ -38,8 +38,8 @@ const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY',
 const state = {
   d: 8,
   g: 4,
-  nx: 24,
-  ny: 16,
+  nx: 16,
+  ny: 24,
   matrixX: 1,                            // 矩阵列数
   matrixY: 1,                            // 矩阵行数
   spanX: 1,                              // 跨格单元列数：连续 spanX×spanY 格合成一张图（连票）
@@ -68,7 +68,7 @@ const state = {
   borderOpacity: 1,
   outerImage: null,                      // 外边距背景图（session 态，不持久化）
   innerImage: null,                      // 内边距背景图（session 态，不持久化）
-  innerColor: '#d4af37',                 // 纯色模式用色
+  innerColor: '#ffffff',                 // 纯色模式用色
   innerColorOpacity: 1,                  // 内边距背景色/渐变透明度（不含照片）
   innerImageOpacity: 1,                  // 内边距背景图透明度
   innerFill: 'solid',                    // 'solid' | 'linear' | 'radial'

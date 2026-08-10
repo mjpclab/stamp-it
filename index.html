@@ -57,10 +57,10 @@
             </div>
             <div class="field-row">
               <label>水平齿孔数
-                <input type="number" id="nx" value="24" min="3" step="1">
+                <input type="number" id="nx" value="16" min="3" step="1">
               </label>
               <label>垂直齿孔数
-                <input type="number" id="ny" value="16" min="3" step="1">
+                <input type="number" id="ny" value="24" min="3" step="1">
               </label>
             </div>
           </div>
@@ -111,7 +111,7 @@
           </select>
         </label>
         <label id="innerColorRow">内边距背景色
-          <input type="color" id="innerColor" value="#d4af37">
+          <input type="color" id="innerColor" value="#ffffff">
         </label>
         <label>内边距背景色透明度 <span id="innerColorOpacityVal">1.00</span>
           <input type="range" id="innerColorOpacity" min="0" max="1" step="0.01" value="1">
@@ -239,10 +239,10 @@
       <div class="stage-bar">
         <button id="viewToggle" class="ghost" type="button">1:1 视图</button>
         <div class="seg" id="dragTargetSeg" role="group" aria-label="拖拽/缩放调整对象">
-          <button class="seg-btn active" type="button" data-target="auto">自动</button>
           <button class="seg-btn" type="button" data-target="photo">照片</button>
           <button class="seg-btn" type="button" data-target="inner">内图</button>
           <button class="seg-btn" type="button" data-target="outer">外图</button>
+          <button class="seg-btn active" type="button" data-target="auto">自动</button>
         </div>
       </div>
       <div class="canvas-area" id="canvasArea">
