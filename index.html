@@ -11,10 +11,10 @@
     <aside class="panel">
       <h1>邮票化</h1>
 
-      <!-- 由内到外：照片 → 内边距 → 齿孔 → 外边距 -->
+      <!-- 由内到外：照片 → 边框 → 内边距 → 齿孔 → 外边距 → 底色 -->
 
       <section class="group">
-        <h2 class="group-title">照片与齿孔（最内）</h2>
+        <h2 class="group-title">照片与齿孔</h2>
         <button id="pickBtn" class="primary">选择图片（可多选）</button>
         <button id="clearBtn" class="ghost small">清空图片</button>
         <input type="file" id="fileInput" accept="image/*" multiple hidden>
@@ -116,18 +116,18 @@
         <label>内边距背景色透明度 <span id="innerColorOpacityVal">1.00</span>
           <input type="range" id="innerColorOpacity" min="0" max="1" step="0.01" value="1">
         </label>
-        <div id="gradientControls" hidden>
-          <div id="stopsEditor"></div>
-          <button id="addStop" class="ghost small" type="button">+ 添加色档</button>
-          <label id="angleRow">渐变角度 <span id="innerAngleVal">90°</span>
+        <div id="innerGradientControls" class="gradient-controls" hidden>
+          <div id="innerStopsEditor"></div>
+          <button id="innerAddStop" class="ghost small" type="button">+ 添加色档</button>
+          <label id="innerAngleRow">渐变角度 <span class="angle-readout"><span id="innerAngleVal">90°</span><span id="innerAngleArrow" class="angle-arrow" aria-hidden="true">↓</span></span>
             <input type="range" id="innerAngle" min="0" max="360" step="1" value="90">
           </label>
-          <div id="originRow" hidden>
-            <label>原点 X <span id="originXVal">0.50</span>
-              <input type="range" id="originX" min="0" max="1" step="0.01" value="0.5">
+          <div id="innerOriginRow" hidden>
+            <label>原点 X <span id="innerOriginXVal">0.50</span>
+              <input type="range" id="innerOriginX" min="0" max="1" step="0.01" value="0.5">
             </label>
-            <label>原点 Y <span id="originYVal">0.50</span>
-              <input type="range" id="originY" min="0" max="1" step="0.01" value="0.5">
+            <label>原点 Y <span id="innerOriginYVal">0.50</span>
+              <input type="range" id="innerOriginY" min="0" max="1" step="0.01" value="0.5">
             </label>
           </div>
         </div>
@@ -155,12 +155,34 @@
             <input type="number" id="outerMarginBottom" class="margin-cell margin-bottom" value="0" min="0" step="0.5" aria-label="下边距">
           </div>
         </label>
-        <label>外边距背景色
+        <label>外边距填充
+          <select id="outerFill">
+            <option value="solid" selected>纯色</option>
+            <option value="linear">线性渐变</option>
+            <option value="radial">径向渐变</option>
+          </select>
+        </label>
+        <label id="outerColorRow">外边距背景色
           <input type="color" id="outerColor" value="#000000">
         </label>
         <label>外边距背景色透明度 <span id="outerColorOpacityVal">0.00</span>
           <input type="range" id="outerColorOpacity" min="0" max="1" step="0.01" value="0">
         </label>
+        <div id="outerGradientControls" class="gradient-controls" hidden>
+          <div id="outerStopsEditor"></div>
+          <button id="outerAddStop" class="ghost small" type="button">+ 添加色档</button>
+          <label id="outerAngleRow">渐变角度 <span class="angle-readout"><span id="outerAngleVal">90°</span><span id="outerAngleArrow" class="angle-arrow" aria-hidden="true">↓</span></span>
+            <input type="range" id="outerAngle" min="0" max="360" step="1" value="90">
+          </label>
+          <div id="outerOriginRow" hidden>
+            <label>原点 X <span id="outerOriginXVal">0.50</span>
+              <input type="range" id="outerOriginX" min="0" max="1" step="0.01" value="0.5">
+            </label>
+            <label>原点 Y <span id="outerOriginYVal">0.50</span>
+              <input type="range" id="outerOriginY" min="0" max="1" step="0.01" value="0.5">
+            </label>
+          </div>
+        </div>
         <div class="img-picker">
           <span class="picker-label">外边距背景图（cover 居中）</span>
           <div class="picker-btns">

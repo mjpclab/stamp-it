@@ -187,8 +187,26 @@ button.primary:hover { filter: brightness(1.08); }
 .picker-btns { display: flex; gap: 8px; }
 .img-picker .hint { word-break: break-all; }
 
-/* ---- 内边距渐变色档编辑器 ---- */
-#gradientControls {
+/* ---- 渐变角度指示箭头 ---- */
+/* ↓ 本身指向 90°（画布向下），故旋转量 = 角度 − 90°，箭头即渐变推进方向 */
+/* 箭头贴行尾（与滑块右端对齐），角度数值位数变化时它不会跟着挪动 */
+.angle-readout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.angle-arrow {
+  display: inline-block;
+  line-height: 1;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  transition: transform 0.08s linear;
+}
+
+/* ---- 渐变色档编辑器（内/外边距共用） ---- */
+.gradient-controls {
   display: flex;
   flex-direction: column;
   gap: 10px;

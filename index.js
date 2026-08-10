@@ -14,7 +14,7 @@
  *
  * 渲染顺序（离屏分层、自底向上合成，天然支持半透明导出）：
  *   1. base 底色层（baseColor@baseOpacity）—— 最底层，齿孔镂空处透出它
- *   2. sheet 外边距层（outerColor + outerImage cover，各自独立透明度）
+ *   2. sheet 外边距层（外边距填充 纯色/线性/径向渐变（横跨整幅画布） + outerImage cover，各自独立透明度）
  *   3. stamp 邮票层（内边距填充 纯色/线性/径向渐变 + innerImage cover + 各跨格组照片 + 各组边框），叠入 deco
  *   4. destination-out 在 deco 上打孔，穿透 sheet + stamp，露出底色 → 真实镂空
  *   5. 合成到目标：先 base，再叠 deco
@@ -28,7 +28,7 @@ const MIN_PERF = 3;       // 齿孔数下限
 const PANEL_W = 340;      // 控制面板宽度（与 index.css .panel 保持一致）
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
 const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY', 'baseColor', 'baseOpacity',
-  'outerColor', 'outerColorOpacity', 'outerImageOpacity',
+  'outerColor', 'outerColorOpacity', 'outerImageOpacity', 'outerFill', 'outerStops', 'outerAngle', 'outerOriginX', 'outerOriginY',
   'outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft',
   'innerMarginTop', 'innerMarginRight', 'innerMarginBottom', 'innerMarginLeft',
   'borderWidth', 'borderGap', 'borderColor', 'borderOpacity',
@@ -47,9 +47,14 @@ const state = {
   spanY: 1,                              // 跨格单元行数；1×1 = 逐格独立
   baseColor: '#000000',                  // 最底层底色：齿孔镂空处透出它
   baseOpacity: 1,                        // 底色透明度（调低可导出透明/半透明 PNG）
-  outerColor: '#000000',
-  outerColorOpacity: 0,                  // 外边距背景色透明度（默认 0：露出底色）
+  outerColor: '#000000',                 // 纯色模式用色
+  outerColorOpacity: 0,                  // 外边距背景色/渐变透明度（默认 0：露出底色）
   outerImageOpacity: 1,                  // 外边距背景图透明度
+  outerFill: 'solid',                    // 'solid' | 'linear' | 'radial'
+  outerStops: [{ pos: 0, color: '#ffffff' }, { pos: 1, color: '#666666' }],
+  outerAngle: 90,                        // 线性渐变角度（度）
+  outerOriginX: 0.5,                     // 径向渐变原点 X（0–1，相对整幅画布宽）
+  outerOriginY: 0.5,                     // 径向渐变原点 Y（0–1，相对整幅画布高）
   outerMarginTop: 0,                     // 外边距步进（四向独立）：0=半孔，每+1 增加一个 pitch
   outerMarginRight: 0,
   outerMarginBottom: 0,
@@ -244,26 +249,34 @@ function clampAllCrops() {
   clampInnerCrop();
 }
 
-/* ---------- 内边距填充（纯色 / 线性 / 径向渐变） ---------- */
+/* ---------- 填充（纯色 / 线性 / 径向渐变） ---------- */
 
-function innerFillStyle(targetCtx, geo) {
+// 内边距与外边距共用同一套填充逻辑：分组即 state 键 / 控件 id 的前缀（innerFill、outerAngle…），
+// 差别只在渐变的参考矩形——内边距横跨整个矩阵块，外边距横跨整幅画布。
+const FILL_RECTS = {
+  inner: (geo) => ({ x: geo.blockX, y: geo.blockY, w: geo.blockW, h: geo.blockH }),
+  outer: (geo) => ({ x: 0, y: 0, w: geo.W, h: geo.H }),
+};
+const FILL_GROUPS = Object.keys(FILL_RECTS);
+
+function fillStyle(targetCtx, geo, p) {
   const s = state;
-  if (s.innerFill === 'solid' || !Array.isArray(s.innerStops) || s.innerStops.length === 0) {
-    return s.innerColor;
+  const rawStops = s[p + 'Stops'];
+  if (s[p + 'Fill'] === 'solid' || !Array.isArray(rawStops) || rawStops.length === 0) {
+    return s[p + 'Color'];
   }
-  const stops = s.innerStops
+  const stops = rawStops
     .map((st) => ({ pos: clamp(st.pos, 0, 1), color: st.color }))
     .sort((a, b) => a.pos - b.pos);
 
-  // 渐变横跨整个矩阵块（而非单张邮票）
-  const bx = geo.blockX, by = geo.blockY, bw = geo.blockW, bh = geo.blockH;
+  const { x: bx, y: by, w: bw, h: bh } = FILL_RECTS[p](geo);
   const cx = bx + bw / 2;
   const cy = by + bh / 2;
   let grad;
-  if (s.innerFill === 'radial') {
+  if (s[p + 'Fill'] === 'radial') {
     // 原点由百分比指定，半径取到最远角点的距离以保证铺满
-    const ox = bx + bw * s.innerOriginX;
-    const oy = by + bh * s.innerOriginY;
+    const ox = bx + bw * s[p + 'OriginX'];
+    const oy = by + bh * s[p + 'OriginY'];
     const r = Math.max(
       Math.hypot(ox - bx, oy - by),
       Math.hypot(ox - (bx + bw), oy - by),
@@ -272,7 +285,7 @@ function innerFillStyle(targetCtx, geo) {
     );
     grad = targetCtx.createRadialGradient(ox, oy, 0, ox, oy, r);
   } else {                       // linear
-    const th = (s.innerAngle * Math.PI) / 180;
+    const th = (s[p + 'Angle'] * Math.PI) / 180;
     const co = Math.cos(th), si = Math.sin(th);
     const L = (Math.abs(bw * co) + Math.abs(bh * si)) / 2;
     grad = targetCtx.createLinearGradient(cx - L * co, cy - L * si, cx + L * co, cy + L * si);
@@ -300,10 +313,10 @@ function render(targetCtx, scale) {
   cv.width = Math.max(1, Math.round(geo.W * scale));
   cv.height = Math.max(1, Math.round(geo.H * scale));
 
-  // --- 外边距层 sheet：外色(@outerColorOpacity) + 外背景图 cover(@outerImageOpacity) 各自独立透明度 ---
+  // --- 外边距层 sheet：外色/渐变(@outerColorOpacity) + 外背景图 cover(@outerImageOpacity) 各自独立透明度 ---
   const sheet = layerCanvas(geo, scale);
   sheet.globalAlpha = s.outerColorOpacity;
-  sheet.fillStyle = s.outerColor;
+  sheet.fillStyle = fillStyle(sheet, geo, 'outer');
   sheet.fillRect(0, 0, geo.W, geo.H);
   sheet.globalAlpha = 1;
   if (s.outerImage) {
@@ -325,7 +338,7 @@ function render(targetCtx, scale) {
   // 内边距层：背景色/渐变(@innerColorOpacity) + 背景图 cover(@innerImageOpacity) 各自独立透明度
   const inner = layerCanvas(geo, scale);
   inner.globalAlpha = s.innerColorOpacity;
-  inner.fillStyle = innerFillStyle(inner, geo);
+  inner.fillStyle = fillStyle(inner, geo, 'inner');
   inner.fillRect(geo.blockX, geo.blockY, geo.blockW, geo.blockH);
   inner.globalAlpha = 1;
   if (s.innerImage) {
@@ -425,7 +438,6 @@ const els = {
   baseColor: document.getElementById('baseColor'),
   baseOpacity: document.getElementById('baseOpacity'),
   baseOpacityVal: document.getElementById('baseOpacityVal'),
-  outerColor: document.getElementById('outerColor'),
   outerColorOpacity: document.getElementById('outerColorOpacity'),
   outerColorOpacityVal: document.getElementById('outerColorOpacityVal'),
   outerImageOpacity: document.getElementById('outerImageOpacity'),
@@ -463,24 +475,10 @@ const els = {
   innerImgClear: document.getElementById('innerImgClear'),
   innerImgInput: document.getElementById('innerImgInput'),
   innerImgInfo: document.getElementById('innerImgInfo'),
-  innerColor: document.getElementById('innerColor'),
-  innerColorRow: document.getElementById('innerColorRow'),
   innerColorOpacity: document.getElementById('innerColorOpacity'),
   innerColorOpacityVal: document.getElementById('innerColorOpacityVal'),
   innerImageOpacity: document.getElementById('innerImageOpacity'),
   innerImageOpacityVal: document.getElementById('innerImageOpacityVal'),
-  innerFill: document.getElementById('innerFill'),
-  gradientControls: document.getElementById('gradientControls'),
-  stopsEditor: document.getElementById('stopsEditor'),
-  addStop: document.getElementById('addStop'),
-  angleRow: document.getElementById('angleRow'),
-  innerAngle: document.getElementById('innerAngle'),
-  innerAngleVal: document.getElementById('innerAngleVal'),
-  originRow: document.getElementById('originRow'),
-  originX: document.getElementById('originX'),
-  originY: document.getElementById('originY'),
-  originXVal: document.getElementById('originXVal'),
-  originYVal: document.getElementById('originYVal'),
   exportScale: document.getElementById('exportScale'),
   exportBtn: document.getElementById('exportBtn'),
   exportSchemeBtn: document.getElementById('exportSchemeBtn'),
@@ -490,6 +488,13 @@ const els = {
   schemeInfo: document.getElementById('schemeInfo'),
   viewToggle: document.getElementById('viewToggle'),
 };
+
+// 两组填充控件的 id 一律「前缀 + 后缀」，逐组补进 els（内/外各一套，结构完全对称）
+const FILL_EL_SUFFIXES = ['Fill', 'Color', 'ColorRow', 'GradientControls', 'StopsEditor', 'AddStop',
+  'AngleRow', 'Angle', 'AngleVal', 'AngleArrow', 'OriginRow', 'OriginX', 'OriginY', 'OriginXVal', 'OriginYVal'];
+for (const p of FILL_GROUPS) {
+  for (const suffix of FILL_EL_SUFFIXES) els[p + suffix] = document.getElementById(p + suffix);
+}
 
 // 内外边距十字盘共用一套控件逻辑；toPx 是各自的“步进 → 像素”换算
 const MARGIN_PADS = [
@@ -574,7 +579,6 @@ function syncInputsFromState() {
   els.baseColor.value = state.baseColor;
   els.baseOpacity.value = state.baseOpacity;
   els.baseOpacityVal.textContent = Number(state.baseOpacity).toFixed(2);
-  els.outerColor.value = state.outerColor;
   els.outerColorOpacity.value = state.outerColorOpacity;
   els.outerColorOpacityVal.textContent = Number(state.outerColorOpacity).toFixed(2);
   els.outerImageOpacity.value = state.outerImageOpacity;
@@ -586,40 +590,52 @@ function syncInputsFromState() {
   els.borderColor.value = state.borderColor;
   els.borderOpacity.value = state.borderOpacity;
   els.borderOpacityVal.textContent = Number(state.borderOpacity).toFixed(2);
-  els.innerColor.value = state.innerColor;
   els.innerColorOpacity.value = state.innerColorOpacity;
   els.innerColorOpacityVal.textContent = Number(state.innerColorOpacity).toFixed(2);
   els.innerImageOpacity.value = state.innerImageOpacity;
   els.innerImageOpacityVal.textContent = Number(state.innerImageOpacity).toFixed(2);
-  els.innerFill.value = state.innerFill;
-  els.innerAngle.value = state.innerAngle;
-  els.innerAngleVal.textContent = `${state.innerAngle}°`;
-  els.originX.value = state.innerOriginX;
-  els.originY.value = state.innerOriginY;
-  els.originXVal.textContent = state.innerOriginX.toFixed(2);
-  els.originYVal.textContent = state.innerOriginY.toFixed(2);
+  for (const p of FILL_GROUPS) syncFillGroup(p);
   els.exportScale.value = String(state.exportScale);
   els.viewToggle.textContent = state.view === 'fit' ? '1:1 视图' : '适应窗口';
   els.viewToggle.classList.toggle('active', state.view === 'actual');
-  renderStopsEditor();
-  updateInnerControlsVisibility();
   updateTabs();
 }
 
-/* ---------- 内边距渐变控件 ---------- */
+/* ---------- 填充控件（内/外边距共用） ---------- */
 
-function updateInnerControlsVisibility() {
-  const mode = state.innerFill;
-  els.innerColorRow.hidden = mode !== 'solid';
-  els.gradientControls.hidden = mode === 'solid';
-  els.angleRow.hidden = mode !== 'linear';     // 角度仅线性渐变有意义
-  els.originRow.hidden = mode !== 'radial';     // 原点仅径向渐变有意义
+function syncFillGroup(p) {
+  els[p + 'Fill'].value = state[p + 'Fill'];
+  els[p + 'Color'].value = state[p + 'Color'];
+  els[p + 'Angle'].value = state[p + 'Angle'];
+  syncAngleReadout(p);
+  els[p + 'OriginX'].value = state[p + 'OriginX'];
+  els[p + 'OriginY'].value = state[p + 'OriginY'];
+  els[p + 'OriginXVal'].textContent = Number(state[p + 'OriginX']).toFixed(2);
+  els[p + 'OriginYVal'].textContent = Number(state[p + 'OriginY']).toFixed(2);
+  renderStopsEditor(p);
+  updateFillControlsVisibility(p);
 }
 
-function renderStopsEditor() {
-  const editor = els.stopsEditor;
+// 角度读数 + 指示箭头：↓ 字形本身指向 90°（画布向下），故旋转 角度 − 90° 即渐变推进方向
+function syncAngleReadout(p) {
+  const deg = state[p + 'Angle'];
+  els[p + 'AngleVal'].textContent = `${deg}°`;
+  els[p + 'AngleArrow'].style.transform = `rotate(${deg - 90}deg)`;
+}
+
+function updateFillControlsVisibility(p) {
+  const mode = state[p + 'Fill'];
+  els[p + 'ColorRow'].hidden = mode !== 'solid';
+  els[p + 'GradientControls'].hidden = mode === 'solid';
+  els[p + 'AngleRow'].hidden = mode !== 'linear';    // 角度仅线性渐变有意义
+  els[p + 'OriginRow'].hidden = mode !== 'radial';   // 原点仅径向渐变有意义
+}
+
+function renderStopsEditor(p) {
+  const editor = els[p + 'StopsEditor'];
+  const stops = state[p + 'Stops'];
   editor.textContent = '';
-  state.innerStops.forEach((stop, i) => {
+  stops.forEach((stop, i) => {
     const row = document.createElement('div');
     row.className = 'stop-row';
 
@@ -627,7 +643,7 @@ function renderStopsEditor() {
     color.type = 'color';
     color.value = stop.color;
     color.addEventListener('input', () => {
-      state.innerStops[i].color = color.value;
+      stops[i].color = color.value;
       renderPreview();
       saveOptions();
     });
@@ -639,7 +655,7 @@ function renderStopsEditor() {
     pos.step = '1';
     pos.value = String(Math.round(stop.pos * 100));
     pos.addEventListener('input', () => {
-      state.innerStops[i].pos = parseInt(pos.value, 10) / 100;
+      stops[i].pos = parseInt(pos.value, 10) / 100;
       renderPreview();
       saveOptions();
     });
@@ -648,11 +664,11 @@ function renderStopsEditor() {
     del.type = 'button';
     del.className = 'stop-del';
     del.textContent = '✕';
-    del.disabled = state.innerStops.length <= 1;   // 至少保留 1 档
+    del.disabled = stops.length <= 1;   // 至少保留 1 档
     del.addEventListener('click', () => {
-      if (state.innerStops.length <= 1) return;
-      state.innerStops.splice(i, 1);
-      renderStopsEditor();
+      if (stops.length <= 1) return;
+      stops.splice(i, 1);
+      renderStopsEditor(p);
       renderPreview();
       saveOptions();
     });
@@ -660,6 +676,35 @@ function renderStopsEditor() {
     row.append(color, pos, del);
     editor.appendChild(row);
   });
+}
+
+function bindFillGroup(p) {
+  const apply = () => { renderPreview(); saveOptions(); };
+  els[p + 'Fill'].addEventListener('change', () => {
+    state[p + 'Fill'] = els[p + 'Fill'].value;
+    updateFillControlsVisibility(p);
+    apply();
+  });
+  els[p + 'Color'].addEventListener('input', () => { state[p + 'Color'] = els[p + 'Color'].value; apply(); });
+  els[p + 'AddStop'].addEventListener('click', () => {
+    const stops = state[p + 'Stops'];
+    const last = stops[stops.length - 1];
+    stops.push({ pos: 1, color: last ? last.color : '#ffffff' });
+    renderStopsEditor(p);
+    apply();
+  });
+  els[p + 'Angle'].addEventListener('input', () => {
+    state[p + 'Angle'] = parseInt(els[p + 'Angle'].value, 10);
+    syncAngleReadout(p);
+    apply();
+  });
+  for (const axis of ['OriginX', 'OriginY']) {
+    els[p + axis].addEventListener('input', () => {
+      state[p + axis] = parseFloat(els[p + axis].value);
+      els[p + axis + 'Val'].textContent = state[p + axis].toFixed(2);
+      apply();
+    });
+  }
 }
 
 /* ---------- 图片持久化（IndexedDB） ---------- */
@@ -927,8 +972,7 @@ function bindControls() {
     renderPreview();
     saveOptions();
   });
-  els.outerColor.addEventListener('input', () => { state.outerColor = els.outerColor.value; renderPreview(); saveOptions(); });
-  els.innerColor.addEventListener('input', () => { state.innerColor = els.innerColor.value; renderPreview(); saveOptions(); });
+  for (const p of FILL_GROUPS) bindFillGroup(p);
 
   els.innerColorOpacity.addEventListener('input', () => {
     state.innerColorOpacity = parseFloat(els.innerColorOpacity.value);
@@ -943,37 +987,6 @@ function bindControls() {
     saveOptions();
   });
 
-  els.innerFill.addEventListener('change', () => {
-    state.innerFill = els.innerFill.value;
-    updateInnerControlsVisibility();
-    renderPreview();
-    saveOptions();
-  });
-  els.addStop.addEventListener('click', () => {
-    const last = state.innerStops[state.innerStops.length - 1];
-    state.innerStops.push({ pos: 1, color: last ? last.color : '#ffffff' });
-    renderStopsEditor();
-    renderPreview();
-    saveOptions();
-  });
-  els.innerAngle.addEventListener('input', () => {
-    state.innerAngle = parseInt(els.innerAngle.value, 10);
-    els.innerAngleVal.textContent = `${state.innerAngle}°`;
-    renderPreview();
-    saveOptions();
-  });
-  els.originX.addEventListener('input', () => {
-    state.innerOriginX = parseFloat(els.originX.value);
-    els.originXVal.textContent = state.innerOriginX.toFixed(2);
-    renderPreview();
-    saveOptions();
-  });
-  els.originY.addEventListener('input', () => {
-    state.innerOriginY = parseFloat(els.originY.value);
-    els.originYVal.textContent = state.innerOriginY.toFixed(2);
-    renderPreview();
-    saveOptions();
-  });
   els.outerColorOpacity.addEventListener('input', () => {
     state.outerColorOpacity = parseFloat(els.outerColorOpacity.value);
     els.outerColorOpacityVal.textContent = state.outerColorOpacity.toFixed(2);
