@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A browser-based "stamp-ifier": turns photos into postage-stamp / souvenir-sheet (小型张) / sheetlet (小全张) images with perforated edges, configurable margins/gradients, and transparent PNG export. Pure client-side, **no build step, no dependencies, no tests, no framework**. Three files do everything: `index.html` (control panel + canvas), `index.css`, `index.js` (all logic). Chinese is the UI language; respond to the user in Chinese.
+A browser-based "stamp-ifier": turns photos into postage-stamp / souvenir-sheet (小型张) / sheetlet (小全张) images with perforated edges, configurable margins/gradients, and transparent PNG export. Pure client-side, **no build step, no dependencies, no tests, no framework**. Three files do everything: `index.html` (control panel + canvas), `index.css`, `index.js` (all logic). Chinese is the UI language; respond to the user in Chinese. A thin PWA layer (`manifest.webmanifest`, `sw.js`, three icons) sits beside them — see PWA below.
 
 `CLAUDE.md` and `GEMINI.md` are symlinks to this file (`AGENTS.md`) — **edit `AGENTS.md`**, not the symlinks.
 
@@ -71,6 +71,17 @@ Touch affordances: `input`/`select` go to `font-size: 16px` inside the query (be
 
 ### Persistence
 `PERSISTED` keys (settings **and** crops — `crops`/`outerCrop`/`innerCrop`) are saved to `localStorage` under prefix `stampit_` (one key each, JSON) on every change and restored by `loadOptions()` at startup. Image **bytes** are too big for localStorage, so the original `File` blobs go to **IndexedDB** (`idbOpen/idbPut/idbGet/idbDelete`, DB `stampit`, store `images`, keys `grid`/`outer`/`inner`). On startup, after the synchronous first render, `restoreImages()` async-reads the blobs, decodes via `blobToImage`, sets `state.images`/`outerImage`/`innerImage` (without resetting the already-restored crops), then re-renders. All IndexedDB ops fail silently → if IDB is unavailable the app degrades to no image-persistence (settings/crops still persist). Note: IndexedDB blob round-trips **stall under headless `--virtual-time-budget`**; verify image persistence over `http://localhost` driving real-time Chromium via CDP, not the virtual-time screenshot path.
+
+### PWA
+`manifest.webmanifest` + `sw.js` + `icon-192.png`/`icon-512.png`/`icon-maskable-512.png` (repo root, flat like everything else) make the app installable and fully offline-capable. `index.html` only adds a `theme-color` meta and the manifest/icon/`apple-touch-icon` links (iOS ignores manifest `icons`) — there is no inline script. Registration is `registerServiceWorker()` in `index.js`, called last in the 启动 block; it registers immediately (no `load` wait — by the time `index.js` runs, the three first-paint assets are already down, so precaching has no bandwidth to steal) and swallows the failure.
+
+**Every path is relative** (`start_url`/`scope`/`id` = `"./"`, icons `"./icon-…"`, register `'sw.js'` — resolved against the *document* URL, not the script's, so living in `index.js` changes nothing) because the same files must serve from a domain root *and* from GitHub Pages' `/stamp-it/` subpath. Never introduce an absolute path here — verified working under both.
+
+`sw.js` precaches the 8 static assets on install (offline-ready immediately), then serves **navigations network-first** (falling back to the cached `./index.html`) and **everything else stale-while-revalidate**. The SWR half is deliberate: it means a deploy reaches users on their *second* load without anyone remembering to bump `CACHE`. The `CACHE` constant is only a manual nuke switch — `activate` deletes every cache whose name differs. Non-GET and cross-origin requests are passed through untouched. There is intentionally no "new version available, click to reload" UI.
+
+**The SW caches your edits during local development.** `file://` is unaffected (no SW there), but the `http://localhost` + CDP path used to verify IndexedDB will happily serve you a stale `index.js` — a code change appears to do nothing, then works on the next reload. Use a throwaway `--user-data-dir` per run, or `Page.setBypassServiceWorker`, when driving localhost.
+
+`file://` still works and must keep working — the only symptom is one harmless console warning that the manifest was blocked by CORS.
 
 ## Gotchas
 

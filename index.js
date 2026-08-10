@@ -1516,6 +1516,17 @@ async function resetScheme() {
   els.schemeInfo.textContent = '已重置为初始状态';
 }
 
+/* ---------- PWA ---------- */
+
+// 注册 Service Worker，装机后可完全离线使用。
+// file:// 下注册必然失败（origin 为 null），静默忽略即可——页面本身照常可用。
+// 'sw.js' 按文档地址解析，所以站点挂在任何子目录（含 GitHub Pages 的 /stamp-it/）都不用改。
+// 不必等 load：本脚本执行时首屏三件套已下载完，预缓存抢不到带宽，而 register 本身是异步的。
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
 /* ---------- 启动 ---------- */
 
 loadOptions();
@@ -1528,3 +1539,4 @@ syncInputsFromState();
 renderPreview();
 bindStageResize();   // 取代 window.resize：可视区尺寸变化（含抽屉开合、横竖屏）即重渲染
 restoreImages();     // 异步从 IndexedDB 还原图片，就绪后重渲染
+registerServiceWorker();
