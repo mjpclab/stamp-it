@@ -7,15 +7,16 @@
  *   - 邮票矩形：Sw = nx*pitch, Sh = ny*pitch
  *   - 外边距 = d/2：画布 W = Sw+d, H = Sh+d，邮票矩形偏移 (d/2, d/2)
  *   - 齿孔：半径 d/2 的整圆，圆心落在邮票矩形边线上，按 pitch 间隔；边角圆形成四分之一孔
- *   - 内边距 = 四向各 N 个 pitch（默认 0.75），作用于每个「跨格组」的外缘
+ *   - 内边距 = 四向各 N 个 pitch（默认 0.75），作用于每个「区域」的外缘
  *   - 边框 = 内边距内缘的实线框（粗细/间距均为像素）；图片再内缩「粗细 + 间距」
- *   - 跨格组 = 连续 spanX×spanY 格合成一张图（连票）：组内相邻格无内边距、画面连续，
- *     仅被齿孔打断；spanX=spanY=1 时退化为逐格独立。不整除时末列/末行为残组
+ *   - 区域 = state.merges 描述的矩形集合（越界裁剪、先到先得，裁剪后退化为单格则整条忽略），
+ *     未被占用的格各自补成隐式 1×1 区域；区域内部相邻格无内边距、画面连续，仅被齿孔打断（连票）。
+ *     大票区域（big:true）额外抑制内部齿孔，只保留外缘一圈
  *
  * 渲染顺序（离屏分层、自底向上合成，天然支持半透明导出）：
  *   1. base 底色层（baseColor@baseOpacity）—— 最底层，齿孔镂空处透出它
  *   2. sheet 外边距层（外边距填充 纯色/线性/径向渐变（横跨整幅画布） + outerImage cover，各自独立透明度）
- *   3. stamp 邮票层（内边距填充 纯色/线性/径向渐变 + innerImage cover + 各跨格组照片 + 各组边框），叠入 deco
+ *   3. stamp 邮票层（内边距填充 纯色/线性/径向渐变 + innerImage cover + 各区域照片 + 各区域边框），叠入 deco
  *   4. destination-out 在 deco 上打孔，穿透 sheet + stamp，露出底色 → 真实镂空
  *   5. 合成到目标：先 base，再叠 deco
  * 改用离屏分层（而非单次 destination-over）是为了让 outerOpacity/baseOpacity 保持均匀、
@@ -86,7 +87,7 @@ const state = {
   // 触摸设备没有 Alt 键，锁定项是访问内背景图的唯一入口
   dragTarget: 'auto',
   images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
-  crops: {},                // 每跨格组独立裁剪：键 "c0,r0"（组起始格）→ {scale, offsetX, offsetY}
+  crops: {},                // 每区域独立裁剪：键 "c0,r0"（区域起始格）→ {scale, offsetX, offsetY}
   outerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 外背景图缩放/平移（session 态）
   innerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 内背景图缩放/平移（session 态）
 };
@@ -95,8 +96,8 @@ const state = {
 const DEFAULTS = structuredClone(state);
 
 const IDENTITY_CROP = { scale: 1, offsetX: 0, offsetY: 0 };
-// 裁剪按「跨格组」存储，键为组的起始格坐标 "c0,r0"；spanX=spanY=1 时即逐格，键与逐格模式一致。
-// 改动 span 后落单的旧键保留不删（切回原 span 自动复活）。
+// 裁剪按「区域」存储，键为区域的起始格坐标 "c0,r0"；空 merges（逐格模式）下即等价于逐格键。
+// 编辑区域（合并/拆分/均匀分块/全部还原）后落单的旧键保留不删，撤销编辑后自动复活。
 function getCrop(c0, r0) { return state.crops[c0 + ',' + r0] || IDENTITY_CROP; }   // 只读，缺省返回共享单位裁剪
 function groupCrop(c0, r0) {                                                       // 取（并按需创建）可编辑的组裁剪
   const k = c0 + ',' + r0;
@@ -461,7 +462,7 @@ function render(targetCtx, scale) {
   deco.setTransform(1, 0, 0, 1, 0, 0);                 // 以设备像素叠入内边距层
   deco.drawImage(inner.canvas, 0, 0);
   deco.setTransform(scale, 0, 0, scale, 0, 0);          // 恢复几何坐标绘制照片
-  // 各跨格组照片：按组的行优先顺序重复填充，一张图铺满整组（组内跨格连续）
+  // 各区域照片：按区域的行优先顺序重复填充，一张图铺满整个区域（区域内跨格连续）
   if (s.images.length) {
     geo.groups.forEach((g, i) => {
       const content = groupContent(geo, g);
@@ -877,7 +878,7 @@ function bindRegionGrid() {
     const absorbed = regionsWithin(geo.groups, s).filter((g) => g.cw * g.ch > 1);
     const big = absorbed.length === 0 || absorbed.some((g) => g.big);
     // 丢弃所有与选区相交的旧合并，而不仅是被完全覆盖的 —— computeGroups 对越界/
-    // 冲突的合并会整条跳过（見 computeGroups），跳过的合并不出现在 geo.groups 里，
+    // 冲突的合并会整条跳过（见 computeGroups），跳过的合并不出现在 geo.groups 里，
     // 但仍留在 state.merges 中，只做「完全覆盖」判断会漏掉这类不可见的合并；
     // 它们会在之后与新合并相交时抢先命中，把用户刚建的合并悄悄吞掉。损坏项（外部数据
     // 可能含 null）由 mergeIntersectsRect 自己判断并返回 false，这里不用再判断一遍。
@@ -1408,7 +1409,7 @@ function groupTarget(geo, gx, gy) {
   return { type: 'group', c0: g.c0, r0: g.r0 };
 }
 
-// 命中目标：块外→外图；块内按 Alt / 是否有照片 → 内图或某跨格组；否则 null（不响应）
+// 命中目标：块外→外图；块内按 Alt / 是否有照片 → 内图或某区域；否则 null（不响应）
 // wantInner（按住 Alt）在块内优先指向内背景图，便于在照片之上调整内图
 // state.dragTarget 非 'auto' 时强制锁定该对象（触摸设备无 Alt 键的替代入口）；
 // 锁定对象的图片不存在时退回 'auto'，避免手势彻底失灵（图片回来后锁定自动生效）
@@ -1495,7 +1496,7 @@ function zoomAt(geo, t, factor, anchor) {
 
 function bindCanvasInteractions() {
   const pointers = new Map();   // pointerId → {x, y}（clientX/Y）：1 指平移，2 指捏合缩放
-  let target = null;            // 当前手势作用对象（跨格组 / 外图 / 内图）
+  let target = null;            // 当前手势作用对象（区域 / 外图 / 内图）
   let last = null;              // 上一次单指位置，null = 当前不平移
   let pinchDist = 0;            // 上一次双指距离，0 = 未在捏合
 
