@@ -241,10 +241,14 @@ button.ghost.small {
   font-size: 12px;
   align-self: flex-start;
 }
-/* 与两个堆叠标签的输入框同行：flex-start 会顶到行首，改成 end 与输入框底对齐 */
-#applySpanBtn {
-  align-self: end;
+/* 与两个堆叠标签的输入框同行：两个按钮竖排，整体在行内垂直居中 */
+.span-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: center;
 }
+.span-actions button.ghost.small { align-self: stretch; }
 
 button.ghost.danger { color: #e5534b; }
 button.ghost.danger:hover { border-color: #e5534b; }
