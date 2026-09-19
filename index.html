@@ -41,14 +41,26 @@
               </label>
             </div>
             <div class="field-row">
-              <label>跨格宽
+              <label>连票宽
                 <input type="number" id="spanX" value="1" min="1" step="1">
               </label>
-              <label>跨格高
+              <label>连票高
                 <input type="number" id="spanY" value="1" min="1" step="1">
               </label>
+              <button type="button" id="applySpanBtn" class="ghost small">应用</button>
             </div>
-            <p class="hint">连票：连续「跨格宽×跨格高」格合成一张图，组内不留白边</p>
+            <p class="hint">应用后按「连票宽×高」重切整个矩阵，会清掉已有的手工合并</p>
+            <div class="region-grid" id="regionGrid"></div>
+            <div class="field-row region-actions">
+              <button type="button" id="mergeBtn" class="ghost small" disabled>合并</button>
+              <button type="button" id="splitBtn" class="ghost small" disabled>拆分</button>
+              <button type="button" id="resetRegionsBtn" class="ghost small">全部还原</button>
+            </div>
+            <div class="seg seg-hidden" id="regionKind">
+              <button class="seg-btn active" type="button" data-kind="big">大票</button>
+              <button class="seg-btn" type="button" data-kind="strip">连票</button>
+            </div>
+            <p class="hint">格内数字 = 该区域的填充顺序，照片按此顺序循环使用（照片数少于区域数时会重复）</p>
           </div>
 
           <div class="tab-panel" id="tab-perf" hidden>

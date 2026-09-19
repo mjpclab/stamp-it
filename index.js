@@ -153,19 +153,31 @@ function computeGroups(X, Y, merges) {
 
 // 判断合并记录 m 的起点是否为 (c0, r0)：与 computeGroups 用同一套取整规则，
 // 否则手工写入 / 导入方案里的非整数坐标能正常落位显示，却永远匹配不上，拆分/大票开关会失灵。
+// 对损坏记录（如 null）返回 false 而非抛错，本身即安全，调用方不必再各自判断合法性一遍。
 function mergeOriginMatches(m, c0, r0) {
-  return Math.round(m.c) === c0 && Math.round(m.r) === r0;
+  return isValidMergeRecord(m) && Math.round(m.c) === c0 && Math.round(m.r) === r0;
 }
 
 // 判断合并记录 m（取整后）是否与矩形 rect={c0,r0,cw,ch} 相交（半开区间，贴边不算相交）。
 // 用于合并前清场：即使 m 因越界/与更早的合并冲突而被 computeGroups 整条跳过、
 // 不出现在 geo.groups 里，它依然留在 state.merges 中 —— 只按「完全覆盖」过滤会漏掉
 // 这类不可见的合并，让它在之后抢先命中、悄悄吞掉用户刚建立的新合并。
+// 对损坏记录返回 false（不相交）而非抛错，同上，调用方不必再各自判断合法性一遍。
 function mergeIntersectsRect(m, rect) {
+  if (!isValidMergeRecord(m)) return false;
   const mc0 = Math.round(m.c), mr0 = Math.round(m.r);
   const mc1 = mc0 + Math.round(m.w), mr1 = mr0 + Math.round(m.h);
   const rc1 = rect.c0 + rect.cw, rr1 = rect.r0 + rect.ch;
   return mc0 < rc1 && mc1 > rect.c0 && mr0 < rr1 && mr1 > rect.r0;
+}
+
+// groups 中完整落在 rect 内的区域（起点与终点都不越出 rect）。区域网格用它算选区
+// 覆盖了哪些已有区域（判断合并/拆分按钮是否可用），合并操作用它算选区吸收了哪些
+// 已有跨格区域（决定新合并默认档位，见「大票/连票」）。
+function regionsWithin(groups, rect) {
+  return groups.filter((g) =>
+    g.c0 >= rect.c0 && g.c0 + g.cw <= rect.c0 + rect.cw &&
+    g.r0 >= rect.r0 && g.r0 + g.ch <= rect.r0 + rect.ch);
 }
 
 // 格 → 区域下标的查找表：命中测试每个拖拽帧都跑，必须 O(1)
@@ -261,8 +273,8 @@ function holeCenters(geo) {
   // EPS 是必需的 —— 边界 y = mT + r0*(ny*pitch) 与孔位 y = mT + k*pitch 在
   // k = r0*ny 时数学上相等，但浮点乘法不满足结合律，可能差一个 ULP。
   const EPS = 1e-6;
-  const bigs = geo.groups.filter((g) => g.big).map((g) => groupOuterRect(geo, g));
-  const inside = (x, y) => bigs.some((R) =>
+  const bigRects = geo.groups.filter((g) => g.big).map((g) => groupOuterRect(geo, g));
+  const inside = (x, y) => bigRects.some((R) =>
     x > R.x + EPS && x < R.x + R.w - EPS && y > R.y + EPS && y < R.y + R.h - EPS);
 
   const vTotal = Y * ny;     // 全高 = blockH / pitch
@@ -519,6 +531,7 @@ function renderPreview() {
   const geo = computeGeometry(state);
   lastAvail = stageAvail();
   updateDragTargetSeg();
+  renderRegionGrid(geo);
   render(ctx, previewScale(geo));
 }
 
@@ -547,6 +560,12 @@ const els = {
   matrixY: document.getElementById('matrixY'),
   spanX: document.getElementById('spanX'),
   spanY: document.getElementById('spanY'),
+  applySpanBtn: document.getElementById('applySpanBtn'),
+  regionGrid: document.getElementById('regionGrid'),
+  mergeBtn: document.getElementById('mergeBtn'),
+  splitBtn: document.getElementById('splitBtn'),
+  resetRegionsBtn: document.getElementById('resetRegionsBtn'),
+  regionKind: document.getElementById('regionKind'),
   baseColor: document.getElementById('baseColor'),
   baseOpacity: document.getElementById('baseOpacity'),
   baseOpacityVal: document.getElementById('baseOpacityVal'),
@@ -713,6 +732,180 @@ function bindDragTargetSeg() {
     state.dragTarget = btn.dataset.target;
     updateDragTargetSeg();
     saveOptions();
+  });
+}
+
+// 选区扩张到它碰到的每个区域的外接矩形，反复直到稳定。
+// 这样拖选永远不会「咬掉半个」已合并区域 —— 部分覆盖一个 2×2 会把整块拉进选区。
+function expandSelection(geo, sel) {
+  let { c0, r0, cw, ch } = sel;
+  for (;;) {
+    let c1 = c0 + cw, r1 = r0 + ch, grew = false;
+    for (const g of geo.groups) {
+      const gx1 = g.c0 + g.cw, gy1 = g.r0 + g.ch;
+      if (g.c0 >= c1 || gx1 <= c0 || g.r0 >= r1 || gy1 <= r0) continue;   // 不相交
+      if (g.c0 < c0) { c0 = g.c0; grew = true; }
+      if (g.r0 < r0) { r0 = g.r0; grew = true; }
+      if (gx1 > c1) { c1 = gx1; grew = true; }
+      if (gy1 > r1) { r1 = gy1; grew = true; }
+    }
+    cw = c1 - c0; ch = r1 - r0;
+    if (!grew) return { c0, r0, cw, ch };
+  }
+}
+
+// 重建跨格区域网格：一区域一格子，用 grid-column/row 的 span 拼出不规则版式。
+// 每次 renderPreview 都会调用，故用签名串去重，避免每个拖拽帧都重建 DOM。
+let lastRegionSig = '';
+let selection = null;   // 当前拖选范围 {c0,r0,cw,ch} | null，仅供编辑交互使用，不持久化
+
+function renderRegionGrid(geo) {
+  // 矩阵变小（或选区来自变动前的手势）可能让旧选区越界：整体丢弃而不是截断，
+  // 因为截断会切开一个完整区域，破坏 expandSelection 保证的「整区域覆盖」不变式。
+  if (selection && (selection.c0 < 0 || selection.r0 < 0 ||
+      selection.c0 + selection.cw > geo.X || selection.r0 + selection.ch > geo.Y)) {
+    selection = null;
+  }
+  // 区域列表可能被网格拖选之外的操作改变（均匀分块、导入方案…），重新扩张保持
+  // 「选区始终整块覆盖区域」不变式；已稳定的选区扩张后值不变，不会打乱下面的签名去重
+  if (selection) selection = expandSelection(geo, selection);
+  const selSig = selection ? [selection.c0, selection.r0, selection.cw, selection.ch].join(',') : '-';
+  const sig = geo.X + 'x' + geo.Y + '|' + geo.Sw.toFixed(3) + 'x' + geo.Sh.toFixed(3) + '|' + selSig + '|' +
+    geo.groups.map((g) => [g.c0, g.r0, g.cw, g.ch, g.big ? 1 : 0].join(',')).join(';');
+
+  const grid = els.regionGrid;
+  // 网格内容（数字标签）会让 width:auto 撑成内容自身的宽度而不是填满容器，
+  // 于是改为显式换算 max-width：按视口高度算出与 CSS max-height:40dvh 相同的像素上限，
+  // 乘以宽高比得到宽度上限，宽高一起收缩、比例不失真。视口尺寸不进签名，每次都要重算。
+  const ratio = (geo.X * geo.Sw) / (geo.Y * geo.Sh);
+  grid.style.maxWidth = (window.innerHeight * 0.4 * ratio) + 'px';
+  if (sig === lastRegionSig) return;
+  lastRegionSig = sig;
+
+  grid.style.gridTemplateColumns = 'repeat(' + geo.X + ', 1fr)';
+  grid.style.gridTemplateRows = 'repeat(' + geo.Y + ', 1fr)';
+  grid.style.aspectRatio = (geo.X * geo.Sw) + ' / ' + (geo.Y * geo.Sh);
+  grid.textContent = '';
+  geo.groups.forEach((g, i) => {
+    const cell = document.createElement('div');
+    cell.className = 'region-cell' +
+      (g.cw * g.ch > 1 ? ' merged' : '') + (g.big ? ' big' : '');
+    cell.style.gridColumn = (g.c0 + 1) + ' / span ' + g.cw;
+    cell.style.gridRow = (g.r0 + 1) + ' / span ' + g.ch;
+    cell.dataset.gi = String(i);
+    cell.textContent = String(i + 1);
+    if (selection && g.c0 >= selection.c0 && g.c0 + g.cw <= selection.c0 + selection.cw &&
+        g.r0 >= selection.r0 && g.r0 + g.ch <= selection.r0 + selection.ch) {
+      cell.classList.add('selected');
+    }
+    grid.appendChild(cell);
+  });
+
+  // 按选区覆盖的区域更新按钮/开关的可用状态与显示的当前档位
+  const covered = selection ? regionsWithin(geo.groups, selection) : [];
+  const soleMerged = covered.length === 1 && covered[0].cw * covered[0].ch > 1;
+  els.mergeBtn.disabled = !(selection && selection.cw * selection.ch > 1 && !soleMerged);
+  els.splitBtn.disabled = !soleMerged;
+  els.regionKind.classList.toggle('seg-hidden', !soleMerged);
+  if (soleMerged) {
+    const kind = covered[0].big ? 'big' : 'strip';
+    for (const b of els.regionKind.querySelectorAll('.seg-btn')) {
+      b.classList.toggle('active', b.dataset.kind === kind);
+    }
+  }
+}
+
+// 跨格区域网格的编辑交互：拖选 → 合并 / 拆分 / 大票连票切换。
+// 用 pointer 事件（非 mouse）以便触摸端可用；网格的 touch-action:none 由 CSS 提供。
+function bindRegionGrid() {
+  const grid = els.regionGrid;
+  let anchor = null;   // 拖选起点格 {c, r}
+
+  // 由指针位置反推格坐标：网格是 X 列 Y 行的等分 CSS Grid
+  const cellAt = (e) => {
+    const geo = computeGeometry(state);
+    const rect = grid.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const c = clamp(Math.floor((e.clientX - rect.left) / rect.width * geo.X), 0, geo.X - 1);
+    const r = clamp(Math.floor((e.clientY - rect.top) / rect.height * geo.Y), 0, geo.Y - 1);
+    return { c, r };
+  };
+
+  const setSelection = (from, to) => {
+    const geo = computeGeometry(state);
+    selection = expandSelection(geo, {
+      c0: Math.min(from.c, to.c), r0: Math.min(from.r, to.r),
+      cw: Math.abs(from.c - to.c) + 1, ch: Math.abs(from.r - to.r) + 1,
+    });
+    renderRegionGrid(geo);
+  };
+
+  grid.addEventListener('pointerdown', (e) => {
+    const cell = cellAt(e);
+    if (!cell) return;
+    anchor = cell;
+    grid.setPointerCapture(e.pointerId);
+    setSelection(anchor, anchor);
+  });
+  grid.addEventListener('pointermove', (e) => {
+    if (!anchor) return;
+    const cell = cellAt(e);
+    if (cell) setSelection(anchor, cell);
+  });
+  const endDrag = (e) => {
+    if (!anchor) return;
+    anchor = null;
+    if (grid.hasPointerCapture(e.pointerId)) grid.releasePointerCapture(e.pointerId);
+  };
+  grid.addEventListener('pointerup', endDrag);
+  grid.addEventListener('pointercancel', endDrag);
+
+  // 区域变更后统一收尾：重新钳制裁剪、重绘、落盘
+  const applyRegions = () => {
+    clampAllCrops();
+    renderPreview();
+    saveOptions();
+  };
+
+  els.mergeBtn.addEventListener('click', () => {
+    if (!selection) return;
+    const s = selection;
+    const geo = computeGeometry(state);
+    // 新合并的默认档位：吸收了至少一个跨格区域时，只要有一个是大票就继续大票，
+    // 全部是连票才继续连票；没吸收任何跨格区域（纯 1×1 格）时无先例可循，
+    // 遵循手工合并默认大票的规则（均匀分块才产出连票，见 index.html 的按钮顺序）。
+    const absorbed = regionsWithin(geo.groups, s).filter((g) => g.cw * g.ch > 1);
+    const big = absorbed.length === 0 || absorbed.some((g) => g.big);
+    // 丢弃所有与选区相交的旧合并，而不仅是被完全覆盖的 —— computeGroups 对越界/
+    // 冲突的合并会整条跳过（見 computeGroups），跳过的合并不出现在 geo.groups 里，
+    // 但仍留在 state.merges 中，只做「完全覆盖」判断会漏掉这类不可见的合并；
+    // 它们会在之后与新合并相交时抢先命中，把用户刚建的合并悄悄吞掉。损坏项（外部数据
+    // 可能含 null）由 mergeIntersectsRect 自己判断并返回 false，这里不用再判断一遍。
+    state.merges = state.merges.filter((m) => !mergeIntersectsRect(m, s));
+    state.merges.push({ c: s.c0, r: s.r0, w: s.cw, h: s.ch, big });
+    applyRegions();
+  });
+
+  els.splitBtn.addEventListener('click', () => {
+    if (!selection) return;
+    const s = selection;
+    state.merges = state.merges.filter((m) => !mergeOriginMatches(m, s.c0, s.r0));
+    applyRegions();
+  });
+
+  els.resetRegionsBtn.addEventListener('click', () => {
+    state.merges = [];
+    selection = null;
+    applyRegions();
+  });
+
+  els.regionKind.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn || !selection) return;
+    const m = state.merges.find((x) => mergeOriginMatches(x, selection.c0, selection.r0));
+    if (!m) return;
+    m.big = btn.dataset.kind === 'big';
+    applyRegions();
   });
 }
 
@@ -1113,6 +1306,14 @@ function bindControls() {
   numField(els.matrixY, 'matrixY', 1);
   numField(els.spanX, 'spanX', 1);
   numField(els.spanY, 'spanY', 1);
+  els.applySpanBtn.addEventListener('click', () => {
+    const X = Math.max(1, Math.round(state.matrixX));
+    const Y = Math.max(1, Math.round(state.matrixY));
+    state.merges = uniformMerges(X, Y, state.spanX, state.spanY);
+    clampAllCrops();
+    renderPreview();
+    saveOptions();
+  });
   numField(els.borderWidth, 'borderWidth', 0);   // 边框粗细/间距挤压图片内容区 → 需重新钳制裁剪
   numField(els.borderGap, 'borderGap', 0);
   bindMarginPads();
@@ -1638,6 +1839,7 @@ bindControls();
 bindCanvasInteractions();
 bindDragDrop();
 bindDragTargetSeg();
+bindRegionGrid();
 bindDrawer();
 syncInputsFromState();
 renderPreview();
