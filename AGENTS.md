@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A browser-based "stamp-ifier": turns photos into postage-stamp / souvenir-sheet (小型张) / sheetlet (小全张) images with perforated edges, configurable margins/gradients, and transparent PNG export. Pure client-side, **no build step, no dependencies, no tests, no framework**. Three files do everything: `index.html` (control panel + canvas), `index.css`, `index.js` (all logic). Chinese is the UI language; respond to the user in Chinese. A thin PWA layer (`manifest.webmanifest`, `sw.js`, three icons) sits beside them — see PWA below.
+A browser-based "stamp-ifier": turns photos into postage-stamp / souvenir-sheet (小型张) / sheetlet (小全张) images with perforated edges, configurable margins/gradients, and transparent PNG export. The matrix can be carved into arbitrary rectangular regions, each rendered either as a se-tenant strip (连票, perforations kept between its cells) or as one large-format stamp (大票, interior perforations suppressed) — see Geometry. Pure client-side, **no build step, no dependencies, no tests, no framework**. Three files do everything: `index.html` (control panel + canvas), `index.css`, `index.js` (all logic). Chinese is the UI language; respond to the user in Chinese. A thin PWA layer (`manifest.webmanifest`, `sw.js`, three icons) sits beside them — see PWA below.
 
 `CLAUDE.md` and `GEMINI.md` are symlinks to this file (`AGENTS.md`) — **edit `AGENTS.md`**, not the symlinks.
 
@@ -101,6 +101,51 @@ Inner and outer margin fills share one implementation, keyed by the prefix strin
 **Drag-target identity.** `hitTarget`/`groupTarget` record a gesture's target as the region's **start cell** `{c0, r0}` — never an index into `geo.groups`. `cropContext` re-resolves the region by that origin on every frame (`geo.groups.findIndex`), because the region list is rebuilt each render and both grows (拆分, 全部还原) and reorders (inserting an earlier-sorting merge), so an index captured at `pointerdown` can silently come to name a different region a frame later. A target whose origin no longer exists (its region was absorbed by a merge) degrades `cropContext` to an inert no-op crop context rather than throwing or retargeting.
 
 Editing regions (合并/拆分/均匀分块/全部还原) or resizing the matrix can orphan crop keys that are no longer region starts — they are **kept, not pruned** (same policy as `state.merges`, see Geometry), so reverting the edit revives them. Drag/zoom also retarget by cursor region: outside the matrix block → `outerImage`/`outerCrop`; inside → the region's photo, or the `innerImage`/`innerCrop` when Alt/Option is held (or when no photos are loaded) — see `hitTarget`/`cropContext`, and the drag-target lock under Responsive layout & touch for the touch-device path. A region clipped by the matrix edge has a different aspect ratio from an unclipped one, so the same looping image covers differently in each. Image **bytes** and their crops now persist across refresh (see Persistence).
+
+### Region grid editor (矩阵 tab)
+The mini grid under the 连票宽×高 controls is a CSS Grid mirror of `geo.groups` — one `div` per
+region positioned with `grid-column/row: <start> / span <size>`, rebuilt by `renderRegionGrid`.
+Its cell numbers are the region's **fill order** (`i+1`), not a photo identity: the photo actually
+drawn is `images[i % len]`, so with fewer photos than regions the two diverge.
+
+**The selection invariant is what makes editing safe.** `selection` (module-level, deliberately not
+persisted) is a cell rect, and `expandSelection(geo, sel)` grows it to the bounding box of every
+region it touches, repeating until stable. That guarantees **a selection always covers whole
+regions** — a drag can never half-eat a merge, which matters because a leftover fragment
+overlapping the new region would be silently dropped later by `computeGroups`'s first-wins pass and
+read to the user as data loss. The loop terminates because the bounds are monotone integers confined
+to `[0,X]`/`[0,Y]`, and it is idempotent, so re-expanding a stable selection is a no-op.
+
+`renderRegionGrid` therefore re-establishes that invariant on **every** render, before it computes
+the dedup signature, because the region list also changes from outside the grid's own gestures
+(均匀分块, `importScheme`, a matrix resize):
+- A selection that no longer fits the matrix is **dropped, not clamped** — clamping would cut a
+  region in half and break the invariant.
+- Otherwise `expandSelection` runs again. It is idempotent, so a stable selection produces the same
+  signature and the dedup still holds.
+
+Skipping either guard leaves 合并/拆分 enabled over a phantom selection; concretely, clicking 合并
+then deletes the region that was just created.
+
+**Sizing needs the JS half — the obvious CSS-only fix does not work.** `width: auto` + `max-height`
+shrink-wraps the grid to roughly 64×97px instead of filling the panel, because the cells' number
+labels give the `1fr` columns a non-zero min-content width. So the cap is split: `max-height: 40dvh`
+in `index.css`, plus a `max-width` computed in `renderRegionGrid` as `innerHeight * 0.4 * ratio` —
+the same cap expressed on the other axis, so width and height shrink together and the stamp aspect
+ratio survives. That `maxWidth` write sits **above** the `sig === lastRegionSig` early return on
+purpose: viewport height is not part of the signature, so it must be recomputed every call. Without
+the cap a 4×4 portrait matrix pushes 合并/拆分/全部还原 below the fold, and 1×12 produces a 4644px grid.
+
+**Border convention**: selected = **dashed**, 大票 = **solid**, colours from the `--region-*` tokens
+in `:root`. `.region-cell.selected.big` must re-declare `border-style` explicitly — `.big` and
+`.selected` tie on specificity, so overriding only `border-color` leaves the style decided by source
+order, and reordering the two rules silently flips a selected 大票 cell between dashed and solid.
+
+**Pointer handling**: `cellAt` maps a pointer position to a cell by dividing the grid's bounding rect
+into `X × Y` equal parts, ignoring `gap`; the resulting drift is bounded by `gap*(X-1)/X` (< 2px) so
+it never escapes the visual gutter, and the `clamp` covers the far edge. Capture is taken on the
+**container**, not on a cell — every `pointermove` can rebuild the whole cell list, and a capture
+held by a removed node would end the drag.
 
 ### Tab groups
 Tabbed control panels are config-driven, not hardcoded: `TAB_GROUPS` lists `{key, bar, fallback, panels}` per group (`stampTab` → 矩阵/齿孔, `layerTab` → 边框/内边距/外边距/底色). `updateTabs()` toggles `.active` and `hidden` for every group and falls back to `fallback` on an illegal persisted/imported value; `bindTabs()` delegates clicks on each `.tab-bar`. Adding a tab group = one `TAB_GROUPS` entry + its `els` ids + the `state` key in `PERSISTED`. Markup: use `.tabs-group` when the whole `<section>` is tabs, `.tabs` for a tab region inside a section that also has controls outside the tabs (the file picker sits outside `stampTab`'s tabs).
