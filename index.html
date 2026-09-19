@@ -41,13 +41,16 @@
               </label>
             </div>
             <div class="field-row">
-              <label>连票宽
+              <label>跨格宽
                 <input type="number" id="spanX" value="1" min="1" step="1">
               </label>
-              <label>连票高
+              <label>跨格高
                 <input type="number" id="spanY" value="1" min="1" step="1">
               </label>
-              <button type="button" id="applySpanBtn" class="ghost small">应用</button>
+              <div class="span-actions">
+                <button type="button" id="applyBigBtn" class="ghost small">大票</button>
+                <button type="button" id="applyStripBtn" class="ghost small">连票</button>
+              </div>
             </div>
             <div class="region-grid" id="regionGrid"></div>
             <div class="field-row region-actions">

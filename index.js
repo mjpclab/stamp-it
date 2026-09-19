@@ -193,9 +193,9 @@ function cellGroupIndex(X, Y, groups) {
   return map;
 }
 
-// 「均匀分块」生成器：按 spanX×spanY 切分矩阵，只产出跨多格的区域
+// 「均匀分块」生成器：按 spanX×spanY 切分矩阵，只产出跨多格的区域；big 由调用方（大票/连票）给定
 //（w*h===1 的残块不产出，由 computeGroups 补成隐式 1×1，结果与旧的均匀 span 模型一致）
-function uniformMerges(X, Y, spanX, spanY) {
+function uniformMerges(X, Y, spanX, spanY, big) {
   const sx = clamp(Math.round(spanX), 1, X);
   const sy = clamp(Math.round(spanY), 1, Y);
   const out = [];
@@ -203,7 +203,7 @@ function uniformMerges(X, Y, spanX, spanY) {
     for (let c = 0; c < X; c += sx) {
       const w = Math.min(sx, X - c);
       const h = Math.min(sy, Y - r);
-      if (w * h > 1) out.push({ c, r, w, h, big: false });
+      if (w * h > 1) out.push({ c, r, w, h, big });
     }
   }
   return out;
@@ -577,7 +577,8 @@ const els = {
   matrixY: document.getElementById('matrixY'),
   spanX: document.getElementById('spanX'),
   spanY: document.getElementById('spanY'),
-  applySpanBtn: document.getElementById('applySpanBtn'),
+  applyBigBtn: document.getElementById('applyBigBtn'),
+  applyStripBtn: document.getElementById('applyStripBtn'),
   regionGrid: document.getElementById('regionGrid'),
   mergeBigBtn: document.getElementById('mergeBigBtn'),
   mergeStripBtn: document.getElementById('mergeStripBtn'),
@@ -1425,14 +1426,16 @@ function bindControls() {
   numField(els.matrixY, 'matrixY', 1);
   numField(els.spanX, 'spanX', 1);
   numField(els.spanY, 'spanY', 1);
-  els.applySpanBtn.addEventListener('click', () => {
+  const applyUniform = (big) => {
     const X = Math.max(1, Math.round(state.matrixX));
     const Y = Math.max(1, Math.round(state.matrixY));
-    state.merges = uniformMerges(X, Y, state.spanX, state.spanY);
+    state.merges = uniformMerges(X, Y, state.spanX, state.spanY, big);
     clampAllCrops();
     renderPreview();
     saveOptions();
-  });
+  };
+  els.applyBigBtn.addEventListener('click', () => applyUniform(true));
+  els.applyStripBtn.addEventListener('click', () => applyUniform(false));
   numField(els.borderWidth, 'borderWidth', 0);   // 边框粗细/间距挤压图片内容区 → 需重新钳制裁剪
   numField(els.borderGap, 'borderGap', 0);
   bindMarginPads();

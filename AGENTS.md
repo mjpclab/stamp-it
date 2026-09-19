@@ -49,11 +49,11 @@ places each one (clamped to the matrix, **first-wins** on overlap, ignored if cl
 leaves it a single cell), fills every unclaimed cell with a 1×1 region, and sorts by
 `(r0, c0)` — which is also the photo-fill order. `geo.groups` is that list and
 `geo.cellGroup` is an `Int32Array` cell→index lookup so `groupAt` stays O(1) during drags.
-An empty `merges` is the per-cell mode. `uniformMerges(X, Y, spanX, spanY)` regenerates the
-list as a uniform split (the 连票宽×高 / 应用 controls, labelled 均匀分块 internally);
-`state.spanX`/`spanY` are now **only** that button's remembered inputs and do not affect
-geometry — every region it produces is `big: false` (连票), which is the button's whole point:
-it is the "make se-tenant strips" path, distinct from the hand-drawn merge below.
+An empty `merges` is the per-cell mode. `uniformMerges(X, Y, spanX, spanY, big)` regenerates the
+list as a uniform split (the 跨格宽×高 controls with their 大票 / 连票 buttons, labelled 均匀分块
+internally); `state.spanX`/`spanY` are now **only** those buttons' remembered inputs and do not
+affect geometry — the kind comes from which button was pressed, exactly like the hand-drawn merge
+below.
 Out-of-bounds merges are clipped for rendering but **kept in `state.merges` unmodified**, so
 shrinking and re-growing the matrix
 revives them — the same policy as orphaned crop keys. `groupFrame(geo, g)` → the region's
@@ -71,12 +71,12 @@ gridlines' endpoints — which coincide with boundary positions — survive. `bi
 every hole, which is the se-tenant (连票) look.
 
 **Choosing big/连票 — the user always says which.** There is **no default-kind inference and no
-inheritance**: 均匀分块 (`uniformMerges`, the 连票宽×高/应用 controls) always produces
-`big: false` — it's the "make a se-tenant sheet" shortcut — and a hand-drawn merge takes its kind
-from the button that was clicked, 合并大票 (`big: true`) or 合并连票 (`big: false`)
-(`mergeSelection(big)` in `bindRegionGrid`). Both merge buttons stay enabled when the selection is
-already a single multi-cell region, so re-merging the same bounds with the other button is how a
-region's kind is switched — that is why there is no separate 大票/连票 toggle. Don't reintroduce a
+inheritance**: 均匀分块 (`uniformMerges`, the 跨格宽×高 controls) takes its kind from the 大票 /
+连票 button pressed beside the inputs (`applyUniform(big)` in `bindControls`), and a hand-drawn
+merge takes its kind from the button that was clicked, 合并大票 (`big: true`) or 合并连票
+(`big: false`) (`mergeSelection(big)` in `bindRegionGrid`). Both merge buttons stay enabled when
+the selection is already a single multi-cell region, so re-merging the same bounds with the other
+button is how a region's kind is switched — that is why there is no separate 大票/连票 toggle. Don't reintroduce a
 kind-inference rule: it was cut precisely because "which kind did I just get?" was unanswerable
 without reading this paragraph.
 
@@ -132,7 +132,7 @@ resets `merges` — no migration path from a pre-branch scheme.
 Editing regions (合并大票/合并连票/拆分/均匀分块/拆分全部) or resizing the matrix can orphan crop keys that are no longer region starts — they are **kept, not pruned** (same policy as `state.merges`, see Geometry), so reverting the edit revives them. Drag/zoom also retarget by cursor region: outside the matrix block → `outerImage`/`outerCrop`; inside → the region's photo, or the `innerImage`/`innerCrop` when Alt/Option is held (or when no photos are loaded) — see `hitTarget`/`cropContext`, and the drag-target lock under Responsive layout & touch for the touch-device path. A region clipped by the matrix edge has a different aspect ratio from an unclipped one, so the same looping image covers differently in each. Image **bytes** and their crops now persist across refresh (see Persistence).
 
 ### Region grid editor (矩阵 tab)
-The mini grid under the 连票宽×高 controls is a CSS Grid mirror of `geo.groups` — one `div` per
+The mini grid under the 跨格宽×高 controls is a CSS Grid mirror of `geo.groups` — one `div` per
 region positioned with `grid-column/row: <start> / span <size>`, rebuilt by `renderRegionGrid`.
 Its cell numbers are the **photo actually drawn** there (`groupImageIndex(i, g) + 1`), so with fewer
 photos than regions the repeats are visible at a glance; with no photos loaded there is no image
