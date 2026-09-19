@@ -12,6 +12,13 @@
   --text: #e6e7ea;
   --muted: #9a9da4;
   --accent: #d4af37;
+  --region-bg: #2a2f37;         /* 区域网格：未选中格 */
+  --region-line: #3a4049;
+  --region-merged-bg: #33404f;  /* 已合并区域 */
+  --region-big-line: #6f8fb0;   /* 大票区域边框 */
+  --region-selected-bg: #4a6fa5;    /* 拖选中的格 */
+  --region-selected-line: #7fa8d8;
+  --region-selected-text: #ffffff;
 }
 
 body {
@@ -230,6 +237,10 @@ button.ghost.small {
   font-size: 12px;
   align-self: flex-start;
 }
+/* 与两个堆叠标签的输入框同行：flex-start 会顶到行首，改成 end 与输入框底对齐 */
+#applySpanBtn {
+  align-self: end;
+}
 
 button.ghost.danger { color: #e5534b; }
 button.ghost.danger:hover { border-color: #e5534b; }
@@ -284,6 +295,10 @@ button.stop-del:disabled { opacity: 0.35; cursor: not-allowed; }
   display: flex;
   gap: 0;
 }
+/* 用 visibility 而非 [hidden]（display:none）隐藏，保留占位，避免面板滚动高度随选区跳变 */
+.seg.seg-hidden {
+  visibility: hidden;
+}
 .seg-btn {
   background: transparent;
   color: var(--muted);
@@ -305,6 +320,38 @@ button.stop-del:disabled { opacity: 0.35; cursor: not-allowed; }
 }
 .seg-btn.active:first-child { margin-left: 0; }
 .seg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 跨格区域网格：按真实邮票比例排布，一格一区域 */
+.region-grid {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  max-height: 40dvh;   /* 极端矩阵（如 1x12）不撑爆抽屉；实际收窄靠 index.js 按同一上限算出的 max-width */
+  margin: 8px auto;
+  touch-action: none;           /* 触摸端拖选不被页面滚动抢走 */
+  user-select: none;
+}
+.region-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--region-bg);
+  border: 1px solid var(--region-line);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.region-cell.merged { background: var(--region-merged-bg); color: var(--text); }
+.region-cell.big { border-style: solid; border-color: var(--region-big-line); }
+.region-cell.selected { border-style: dashed; background: var(--region-selected-bg); color: var(--region-selected-text); border-color: var(--region-selected-line); }
+/* 选中的大票区域：两者叠加时，底色仍表明「选中」，边框颜色改回大票的专属色以表明
+   「大票」；边框样式显式声明为 dashed（与 .selected 一致），不依赖 .selected/.big
+   两条同优先级规则谁写在后面 —— 只覆盖 border-color 时，border-style 仍会因两条规则
+   优先级相同而由源码顺序决定，起不到「显式声明优先级」的作用。 */
+.region-cell.selected.big { border-style: dashed; border-color: var(--region-big-line); }
+.region-actions { gap: 6px; }
 
 button.ghost {
   background: transparent;
