@@ -26,7 +26,8 @@ const DPR_LIMIT = 8;      // 预览缩放上限
 const ZOOM_STEP = 1.1;    // 每格滚轮缩放系数
 const MIN_PERF = 3;       // 齿孔数下限
 const STORAGE_PREFIX = 'stampit_';   // localStorage key 前缀
-const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY', 'baseColor', 'baseOpacity',
+const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY',
+  'merges', 'baseColor', 'baseOpacity',
   'outerColor', 'outerColorOpacity', 'outerImageOpacity', 'outerFill', 'outerStops', 'outerAngle', 'outerOriginX', 'outerOriginY',
   'outerMarginTop', 'outerMarginRight', 'outerMarginBottom', 'outerMarginLeft',
   'innerMarginTop', 'innerMarginRight', 'innerMarginBottom', 'innerMarginLeft',
@@ -42,8 +43,9 @@ const state = {
   ny: 24,
   matrixX: 1,                            // 矩阵列数
   matrixY: 1,                            // 矩阵行数
-  spanX: 1,                              // 跨格单元列数：连续 spanX×spanY 格合成一张图（连票）
-  spanY: 1,                              // 跨格单元行数；1×1 = 逐格独立
+  spanX: 1,                              // 「均匀分块」输入框的记忆值，不参与几何
+  spanY: 1,
+  merges: [],                            // 跨格区域（只存跨多格的）：{c,r,w,h,big}；空 = 全部逐格
   baseColor: '#000000',                  // 最底层底色：齿孔镂空处透出它
   baseOpacity: 1,                        // 底色透明度（调低可导出透明/半透明 PNG）
   outerColor: '#000000',                 // 纯色模式用色
@@ -107,6 +109,74 @@ const ctx = canvas.getContext('2d');
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /* ---------- 几何 ---------- */
+
+// 合并记录的最基本合法性：非 null 且为对象。state.merges 来自方案导入/localStorage，
+// 可能含损坏项（如 null）。computeGroups 不是唯一遍历 state.merges 的地方 —— 区域网格
+// 的合并/拆分/大票点击处理器也直接读它，所以两边共用这一个谓词，不各自假设合法性、
+// 逐渐失去同步。
+function isValidMergeRecord(m) {
+  return !!m && typeof m === 'object';
+}
+
+// 由「合并区域」派生完整区域列表：按顺序落位每个合并（越界裁剪、与已占格重叠则整个忽略），
+// 未被占用的格各自成 1×1 区域；最后按 (r0,c0) 行优先排序 —— 这个顺序也是照片填充顺序。
+// 裁剪后退化为单格的合并被忽略：该格会作为隐式 1×1 补回，结果一致。
+function computeGroups(X, Y, merges) {
+  const taken = new Uint8Array(X * Y);
+  const groups = [];
+  for (const m of (Array.isArray(merges) ? merges : [])) {
+    if (!isValidMergeRecord(m)) continue;   // 外部数据（方案文件/localStorage）可能损坏，跳过而非抛错
+    const c0 = Math.round(m.c);
+    const r0 = Math.round(m.r);
+    if (!(c0 >= 0 && r0 >= 0 && c0 < X && r0 < Y)) continue;
+    const cw = Math.min(Math.round(m.w), X - c0);
+    const ch = Math.min(Math.round(m.h), Y - r0);
+    if (cw < 1 || ch < 1 || cw * ch < 2) continue;
+    let free = true;
+    for (let r = r0; r < r0 + ch && free; r++) {
+      for (let c = c0; c < c0 + cw; c++) if (taken[r * X + c]) { free = false; break; }
+    }
+    if (!free) continue;
+    for (let r = r0; r < r0 + ch; r++) {
+      for (let c = c0; c < c0 + cw; c++) taken[r * X + c] = 1;
+    }
+    groups.push({ c0, r0, cw, ch, big: !!m.big });
+  }
+  for (let r = 0; r < Y; r++) {
+    for (let c = 0; c < X; c++) {
+      if (!taken[r * X + c]) groups.push({ c0: c, r0: r, cw: 1, ch: 1, big: false });
+    }
+  }
+  groups.sort((a, b) => a.r0 - b.r0 || a.c0 - b.c0);
+  return groups;
+}
+
+// 格 → 区域下标的查找表：命中测试每个拖拽帧都跑，必须 O(1)
+function cellGroupIndex(X, Y, groups) {
+  const map = new Int32Array(X * Y);
+  groups.forEach((g, i) => {
+    for (let r = g.r0; r < g.r0 + g.ch; r++) {
+      for (let c = g.c0; c < g.c0 + g.cw; c++) map[r * X + c] = i;
+    }
+  });
+  return map;
+}
+
+// 「均匀分块」生成器：按 spanX×spanY 切分矩阵，只产出跨多格的区域
+//（w*h===1 的残块不产出，由 computeGroups 补成隐式 1×1，结果与旧的均匀 span 模型一致）
+function uniformMerges(X, Y, spanX, spanY) {
+  const sx = clamp(Math.round(spanX), 1, X);
+  const sy = clamp(Math.round(spanY), 1, Y);
+  const out = [];
+  for (let r = 0; r < Y; r += sy) {
+    for (let c = 0; c < X; c += sx) {
+      const w = Math.min(sx, X - c);
+      const h = Math.min(sy, Y - r);
+      if (w * h > 1) out.push({ c, r, w, h, big: false });
+    }
+  }
+  return out;
+}
 
 function computeGeometry(s) {
   const pitch = s.d + s.g;
