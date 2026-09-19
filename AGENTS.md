@@ -70,17 +70,15 @@ plus a `1e-6` epsilon, because `r0*(ny*pitch)` and `(r0*ny)*pitch` can differ by
 gridlines' endpoints — which coincide with boundary positions — survive. `big: false` keeps
 every hole, which is the se-tenant (连票) look.
 
-**Default big/连票 by path, and inheritance on merge.** The two ways to create a multi-cell
-region default to opposite kinds, and the region-grid UI (button order, mini-grid legend) is
-built to make that legible: 均匀分块 (`uniformMerges`, the 连票宽×高/应用 controls) always
-produces `big: false` — it's the "make a se-tenant sheet" shortcut. A hand-drawn merge (拖选 +
-合并) defaults to `big: true` **unless** it absorbs existing multi-cell regions, in which case
-it inherits their kind: `big: false` only if *every* absorbed region is `big: false`, `big: true`
-if any absorbed region is. Absorbing zero multi-cell regions (a merge built purely from 1×1
-cells) has no precedent to inherit, so it falls through to the hand-drawn default (`big: true`).
-See the `absorbed`/`big` computation in `mergeBtn`'s click handler (`regionsWithin`, shared with
-`renderRegionGrid`'s covered-region check) — reading `absorbed.length === 0` as "no multi-cell
-region survives" would make every fresh merge default to 连票 and silently cancel this rule.
+**Choosing big/连票 — the user always says which.** There is **no default-kind inference and no
+inheritance**: 均匀分块 (`uniformMerges`, the 连票宽×高/应用 controls) always produces
+`big: false` — it's the "make a se-tenant sheet" shortcut — and a hand-drawn merge takes its kind
+from the button that was clicked, 合并大票 (`big: true`) or 合并连票 (`big: false`)
+(`mergeSelection(big)` in `bindRegionGrid`). Both merge buttons stay enabled when the selection is
+already a single multi-cell region, so re-merging the same bounds with the other button is how a
+region's kind is switched — that is why there is no separate 大票/连票 toggle. Don't reintroduce a
+kind-inference rule: it was cut precisely because "which kind did I just get?" was unanswerable
+without reading this paragraph.
 
 ### Layered render (`render(targetCtx, scale)`) — the core, read this before touching rendering
 Everything is drawn in **geometry pixels** under a `scale` transform; offscreen layers are built with `layerCanvas(geo, scale)`. Compositing is bottom-up and the layering is load-bearing:
@@ -98,7 +96,7 @@ Inner and outer margin fills share one implementation, keyed by the prefix strin
 ### Photos & per-region crop
 `state.images` is an array; region `i` in `geo.groups` (already sorted `(r0, c0)`) shows `images[i % len]` via `groupImage` (1 image→sheetlet, N→full sheet, repeating in that same row-major order), **unless the user pinned that region to a specific photo** — see Per-region photo choice below. Crop (zoom/pan) is **per region**: `state.crops` is keyed by the region's **start cell** `"c0,r0"` → `{scale,offsetX,offsetY}`; `getCrop` reads (shared identity default), `groupCrop` lazily creates an editable one. Crop keys are the region's **start cell**, which stays unique under an irregular tiling and survives a clip (clipping shrinks `cw`/`ch`, never the origin), so crop data carries across layout changes untouched. Pointer drag / wheel-zoom (cursor-anchored) act only on the region under the cursor (`groupAt`, an O(1) lookup through `geo.cellGroup`); `clampCropGroup` keeps each image covering its region's content rect, `clampAllCrops` re-clamps after geometry changes.
 
-**Drag-target identity.** `hitTarget`/`groupTarget` record a gesture's target as the region's **start cell** `{c0, r0}` — never an index into `geo.groups`. `cropContext` re-resolves the region by that origin on every frame (`geo.groups.findIndex`), because the region list is rebuilt each render and both grows (拆分, 全部还原) and reorders (inserting an earlier-sorting merge), so an index captured at `pointerdown` can silently come to name a different region a frame later. A target whose origin no longer exists (its region was absorbed by a merge) degrades `cropContext` to an inert no-op crop context rather than throwing or retargeting.
+**Drag-target identity.** `hitTarget`/`groupTarget` record a gesture's target as the region's **start cell** `{c0, r0}` — never an index into `geo.groups`. `cropContext` re-resolves the region by that origin on every frame (`geo.groups.findIndex`), because the region list is rebuilt each render and both grows (拆分, 拆分全部) and reorders (inserting an earlier-sorting merge), so an index captured at `pointerdown` can silently come to name a different region a frame later. A target whose origin no longer exists (its region was absorbed by a merge) degrades `cropContext` to an inert no-op crop context rather than throwing or retargeting.
 
 **Per-region photo choice.** `state.picks` maps a region's **start cell** `"c0,r0"` → an index into
 `state.images`, and is deliberately the same shape and key as `state.crops` — same origin-based
@@ -115,7 +113,7 @@ alongside `crops`, because the old indices then name a different set of images. 
 resets `state.picks = {}` when the imported settings carry no `picks` object, for the same reason it
 resets `merges` — no migration path from a pre-branch scheme.
 
-Editing regions (合并/拆分/均匀分块/全部还原) or resizing the matrix can orphan crop keys that are no longer region starts — they are **kept, not pruned** (same policy as `state.merges`, see Geometry), so reverting the edit revives them. Drag/zoom also retarget by cursor region: outside the matrix block → `outerImage`/`outerCrop`; inside → the region's photo, or the `innerImage`/`innerCrop` when Alt/Option is held (or when no photos are loaded) — see `hitTarget`/`cropContext`, and the drag-target lock under Responsive layout & touch for the touch-device path. A region clipped by the matrix edge has a different aspect ratio from an unclipped one, so the same looping image covers differently in each. Image **bytes** and their crops now persist across refresh (see Persistence).
+Editing regions (合并大票/合并连票/拆分/均匀分块/拆分全部) or resizing the matrix can orphan crop keys that are no longer region starts — they are **kept, not pruned** (same policy as `state.merges`, see Geometry), so reverting the edit revives them. Drag/zoom also retarget by cursor region: outside the matrix block → `outerImage`/`outerCrop`; inside → the region's photo, or the `innerImage`/`innerCrop` when Alt/Option is held (or when no photos are loaded) — see `hitTarget`/`cropContext`, and the drag-target lock under Responsive layout & touch for the touch-device path. A region clipped by the matrix edge has a different aspect ratio from an unclipped one, so the same looping image covers differently in each. Image **bytes** and their crops now persist across refresh (see Persistence).
 
 ### Region grid editor (矩阵 tab)
 The mini grid under the 连票宽×高 controls is a CSS Grid mirror of `geo.groups` — one `div` per
@@ -129,6 +127,14 @@ choosing. (An earlier revision drew a corner dot for it; it was cut as noise. If
 ever comes back, draw it with `::after` and **not** a border or text colour — `.merged`/`.big`/
 `.selected` already tie on specificity over both, and a fourth contender would be decided by source
 order; see the `.selected.big` note below.)
+
+**The action row** is four buttons on one line — 合并大票 / 合并连票 / 拆分 / 拆分全部 — and they
+only ever change `disabled`, never visibility, so the panel's scroll height is stable while dragging
+a selection. Both merge buttons are enabled whenever the selection spans more than one cell
+(including when it is already a single multi-cell region, which is how a region's 大票/连票 is
+switched); 拆分 needs the selection to be exactly one multi-cell region. They fit a 340px panel only
+because `.region-actions button.ghost.small` overrides `button.ghost.small`'s `align-self:
+flex-start` and 10px side padding with `flex: 1` and 4px — with the base padding the row wraps.
 
 **The 用图选择条** (`#regionPicks`, `renderPickStrip`) is one button per loaded photo inside the
 scrolling `#pickStrip`, plus a 重置顺序 button outside it. Clicking a thumbnail writes that index
@@ -172,8 +178,8 @@ the dedup signature, because the region list also changes from outside the grid'
 - Otherwise `expandSelection` runs again. It is idempotent, so a stable selection produces the same
   signature and the dedup still holds.
 
-Skipping either guard leaves 合并/拆分 enabled over a phantom selection; concretely, clicking 合并
-then deletes the region that was just created.
+Skipping either guard leaves 合并大票/合并连票/拆分 enabled over a phantom selection; concretely,
+clicking a merge button then deletes the region that was just created.
 
 **Sizing needs the JS half — the obvious CSS-only fix does not work.** `width: auto` + `max-height`
 shrink-wraps the grid to roughly 64×97px instead of filling the panel, because the cells' number
@@ -182,7 +188,7 @@ in `index.css`, plus a `max-width` computed in `renderRegionGrid` as `innerHeigh
 the same cap expressed on the other axis, so width and height shrink together and the stamp aspect
 ratio survives. That `maxWidth` write sits **above** the `sig === lastRegionSig` early return on
 purpose: viewport height is not part of the signature, so it must be recomputed every call. Without
-the cap a 4×4 portrait matrix pushes 合并/拆分/全部还原 below the fold, and 1×12 produces a 4644px grid.
+the cap a 4×4 portrait matrix pushes 合并大票/合并连票/拆分/拆分全部 below the fold, and 1×12 produces a 4644px grid.
 
 **Border convention**: selected = **dashed**, 大票 = **solid**, colours from the `--region-*` tokens
 in `:root`. `.region-cell.selected.big` must re-declare `border-style` explicitly — `.big` and
@@ -225,7 +231,7 @@ Touch affordances: `input`/`select` go to `font-size: 16px` inside the query (be
 
 ## Gotchas
 
-- **`[hidden]` needs `!important`**: `index.css` sets `display:flex` on `label`/group containers, which overrides the UA `[hidden]{display:none}`. The rule `[hidden]{display:none !important}` makes the conditional gradient/origin/color rows actually hide. **Exception: `#regionKind`** (the 大票/连票 toggle) uses `.seg-hidden { visibility: hidden }` instead of the `hidden` attribute, on purpose — `[hidden]`'s `display:none` would drop it from layout and make the panel's scroll height jump every time the region-grid selection changes; `visibility: hidden` keeps its box reserved. Any other element that toggles visibility from selection state (as opposed to a one-shot mode switch like the tabs) should default to this pattern too.
+- **`[hidden]` needs `!important`**: `index.css` sets `display:flex` on `label`/group containers, which overrides the UA `[hidden]{display:none}`. The rule `[hidden]{display:none !important}` makes the conditional gradient/origin/color rows actually hide. Note the region-grid actions deliberately **disable** rather than hide: anything driven by the selection must not change the panel's scroll height every time the selection changes, so disable it, or hide it with `visibility: hidden` — never with `[hidden]`'s `display:none`. The `hidden` attribute is for one-shot mode switches (the tabs, the photos/no-photos switch).
 - **Preview scale (`previewScale`)**: fit mode **measures `#canvasArea`** (`stageAvail()`) — never re-derive the free space from `window.innerWidth` minus the panel width, which is what the deleted `PANEL_W` constant did (it under-measured by ~30px and broke the moment the panel stopped being a fixed-width left column). Fit mode must also have **no lower clamp** or large hole diameters overflow into scrollbars; only the upper bound (`DPR_LIMIT`) is capped.
 - **`bindStageResize()`'s dedup is load-bearing**: the `ResizeObserver` on `#canvasArea` re-renders on any size change, but a 1:1-view re-render can toggle that element's scrollbars, which changes its content box again → infinite loop. The `lastAvail` comparison (written by `renderPreview`) is what breaks the cycle. Verified: 1:1 view with overflowing geometry settles in 2 renders.
 - **`imageSmoothingQuality = 'high'` is set on every context that draws images** (the three `layerCanvas` layers, which is where all photo/background `drawImage` calls happen, plus the target context). Its effect is **platform-dependent, and the platforms disagree** — so judge it on the device that matters, not on the dev machine:
@@ -248,8 +254,8 @@ Touch affordances: `input`/`select` go to `font-size: 16px` inside the query (be
   containment (`mergeIntersectsRect`, not "is this merge fully covered by the selection"), or
   an invisible out-of-bounds merge survives, later wins `computeGroups`'s first-wins pass, and
   silently discards a user's new merge.
-- **`computeGroups` is not the only consumer of `state.merges`.** The region-grid's 合并/拆分/
-  大票 click handlers (`bindRegionGrid`) read `state.merges` directly. `mergeIntersectsRect(m,
+- **`computeGroups` is not the only consumer of `state.merges`.** The region-grid's 合并大票/
+  合并连票/拆分 click handlers (`bindRegionGrid`) read `state.merges` directly. `mergeIntersectsRect(m,
   rect)` and `mergeOriginMatches(m, c0, r0)` are safe by construction for a malformed entry
   (e.g. `null` from a corrupted import): they call `isValidMergeRecord(m)` themselves and
   return `false` rather than throwing, so **no caller needs to check validity before calling

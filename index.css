@@ -106,6 +106,9 @@ input[type="color"] {
 
 input[type="range"] { width: 100%; accent-color: var(--accent); }
 
+/* 按钮文字被迫换行时把两行匀开：「合并大票」断成 合并/大票，而不是 3+1 */
+button { text-wrap: balance; }
+
 button.primary {
   background: var(--accent);
   color: #2b2300;
@@ -295,10 +298,6 @@ button.stop-del:disabled { opacity: 0.35; cursor: not-allowed; }
   display: flex;
   gap: 0;
 }
-/* 用 visibility 而非 [hidden]（display:none）隐藏，保留占位，避免面板滚动高度随选区跳变 */
-.seg.seg-hidden {
-  visibility: hidden;
-}
 .seg-btn {
   background: transparent;
   color: var(--muted);
@@ -352,6 +351,15 @@ button.stop-del:disabled { opacity: 0.35; cursor: not-allowed; }
    优先级相同而由源码顺序决定，起不到「显式声明优先级」的作用。 */
 .region-cell.selected.big { border-style: dashed; border-color: var(--region-big-line); }
 .region-actions { gap: 6px; }
+/* 四个按钮等分一行：默认的 flex-start + 左右 10px 内边距在 340px 面板里放不下。
+   文字允许换行（窄面板上断成两行，由全局的 text-wrap: balance 匀开），stretch 让
+   同行按钮等高。 */
+.region-actions button.ghost.small {
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  padding: 5px 4px;
+}
 
 /* 用图选择条：选中区域后点缩略图为其指定照片 */
 .region-picks {

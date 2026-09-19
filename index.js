@@ -98,7 +98,7 @@ const DEFAULTS = structuredClone(state);
 
 const IDENTITY_CROP = { scale: 1, offsetX: 0, offsetY: 0 };
 // 裁剪按「区域」存储，键为区域的起始格坐标 "c0,r0"；空 merges（逐格模式）下即等价于逐格键。
-// 编辑区域（合并/拆分/均匀分块/全部还原）后落单的旧键保留不删，撤销编辑后自动复活。
+// 编辑区域（合并大票/合并连票/拆分/均匀分块/拆分全部）后落单的旧键保留不删，撤销编辑后自动复活。
 function getCrop(c0, r0) { return state.crops[c0 + ',' + r0] || IDENTITY_CROP; }   // 只读，缺省返回共享单位裁剪
 function groupCrop(c0, r0) {                                                       // 取（并按需创建）可编辑的组裁剪
   const k = c0 + ',' + r0;
@@ -174,8 +174,7 @@ function mergeIntersectsRect(m, rect) {
 }
 
 // groups 中完整落在 rect 内的区域（起点与终点都不越出 rect）。区域网格用它算选区
-// 覆盖了哪些已有区域（判断合并/拆分按钮是否可用），合并操作用它算选区吸收了哪些
-// 已有跨格区域（决定新合并默认档位，见「大票/连票」）。
+// 覆盖了哪些已有区域：判断拆分按钮是否可用，以及用图选择条该写哪些区域。
 function regionsWithin(groups, rect) {
   return groups.filter((g) =>
     g.c0 >= rect.c0 && g.c0 + g.cw <= rect.c0 + rect.cw &&
@@ -579,10 +578,10 @@ const els = {
   spanY: document.getElementById('spanY'),
   applySpanBtn: document.getElementById('applySpanBtn'),
   regionGrid: document.getElementById('regionGrid'),
-  mergeBtn: document.getElementById('mergeBtn'),
+  mergeBigBtn: document.getElementById('mergeBigBtn'),
+  mergeStripBtn: document.getElementById('mergeStripBtn'),
   splitBtn: document.getElementById('splitBtn'),
   resetRegionsBtn: document.getElementById('resetRegionsBtn'),
-  regionKind: document.getElementById('regionKind'),
   regionPicks: document.getElementById('regionPicks'),
   pickStrip: document.getElementById('pickStrip'),
   resetPicksBtn: document.getElementById('resetPicksBtn'),
@@ -885,21 +884,17 @@ function renderRegionGrid(geo) {
     grid.appendChild(cell);
   });
 
-  // 按选区覆盖的区域更新按钮/开关的可用状态与显示的当前档位
+  // 按选区更新按钮可用状态。合并大票/合并连票对「已是单个跨格区域」的选区同样可用 ——
+  // 同边界重新合并即切换该区域的档位，不再需要单独的大票/连票开关。
   const covered = selection ? regionsWithin(geo.groups, selection) : [];
   const soleMerged = covered.length === 1 && covered[0].cw * covered[0].ch > 1;
-  els.mergeBtn.disabled = !(selection && selection.cw * selection.ch > 1 && !soleMerged);
+  const canMerge = !!selection && selection.cw * selection.ch > 1;
+  els.mergeBigBtn.disabled = !canMerge;
+  els.mergeStripBtn.disabled = !canMerge;
   els.splitBtn.disabled = !soleMerged;
-  els.regionKind.classList.toggle('seg-hidden', !soleMerged);
-  if (soleMerged) {
-    const kind = covered[0].big ? 'big' : 'strip';
-    for (const b of els.regionKind.querySelectorAll('.seg-btn')) {
-      b.classList.toggle('active', b.dataset.kind === kind);
-    }
-  }
 }
 
-// 跨格区域网格的编辑交互：拖选 → 合并 / 拆分 / 大票连票切换。
+// 跨格区域网格的编辑交互：拖选 → 合并成大票 / 合并成连票 / 拆分。
 // 用 pointer 事件（非 mouse）以便触摸端可用；网格的 touch-action:none 由 CSS 提供。
 function bindRegionGrid() {
   const grid = els.regionGrid;
@@ -954,15 +949,11 @@ function bindRegionGrid() {
     saveOptions();
   };
 
-  els.mergeBtn.addEventListener('click', () => {
+  // 按选区建一个跨格区域，档位由按钮直接给出（不再有继承/默认推断）。选区本来就是
+  // 单个跨格区域时，等价于原地切换它的大票/连票。
+  const mergeSelection = (big) => {
     if (!selection) return;
     const s = selection;
-    const geo = computeGeometry(state);
-    // 新合并的默认档位：吸收了至少一个跨格区域时，只要有一个是大票就继续大票，
-    // 全部是连票才继续连票；没吸收任何跨格区域（纯 1×1 格）时无先例可循，
-    // 遵循手工合并默认大票的规则（均匀分块才产出连票，见 index.html 的按钮顺序）。
-    const absorbed = regionsWithin(geo.groups, s).filter((g) => g.cw * g.ch > 1);
-    const big = absorbed.length === 0 || absorbed.some((g) => g.big);
     // 丢弃所有与选区相交的旧合并，而不仅是被完全覆盖的 —— computeGroups 对越界/
     // 冲突的合并会整条跳过（见 computeGroups），跳过的合并不出现在 geo.groups 里，
     // 但仍留在 state.merges 中，只做「完全覆盖」判断会漏掉这类不可见的合并；
@@ -971,7 +962,9 @@ function bindRegionGrid() {
     state.merges = state.merges.filter((m) => !mergeIntersectsRect(m, s));
     state.merges.push({ c: s.c0, r: s.r0, w: s.cw, h: s.ch, big });
     applyRegions();
-  });
+  };
+  els.mergeBigBtn.addEventListener('click', () => mergeSelection(true));
+  els.mergeStripBtn.addEventListener('click', () => mergeSelection(false));
 
   els.splitBtn.addEventListener('click', () => {
     if (!selection) return;
@@ -983,15 +976,6 @@ function bindRegionGrid() {
   els.resetRegionsBtn.addEventListener('click', () => {
     state.merges = [];
     selection = null;
-    applyRegions();
-  });
-
-  els.regionKind.addEventListener('click', (e) => {
-    const btn = e.target.closest('.seg-btn');
-    if (!btn || !selection) return;
-    const m = state.merges.find((x) => mergeOriginMatches(x, selection.c0, selection.r0));
-    if (!m) return;
-    m.big = btn.dataset.kind === 'big';
     applyRegions();
   });
 
@@ -1551,7 +1535,7 @@ function cropContext(geo, t) {
   }
   // 按起始格坐标重新查找区域，而非沿用手势开始时（pointerdown）捕获的下标：
   // geo 每帧重新计算，区域列表可能在手势途中收缩（合并吞并了目标）或增长
-  // （拆分/全部还原），两种情况下数组下标都可能失效或悄悄指向别的区域 ——
+  // （拆分/拆分全部），两种情况下数组下标都可能失效或悄悄指向别的区域 ——
   // 起始格坐标是区域的稳定身份，找不到就说明该区域确实已不存在。
   const gi = geo.groups.findIndex((cand) => cand.c0 === t.c0 && cand.r0 === t.r0);
   const g = geo.groups[gi];

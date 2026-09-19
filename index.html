@@ -52,13 +52,10 @@
             <p class="hint">应用后按「连票宽×高」重切整个矩阵，会清掉已有的手工合并</p>
             <div class="region-grid" id="regionGrid"></div>
             <div class="field-row region-actions">
-              <button type="button" id="mergeBtn" class="ghost small" disabled>合并</button>
+              <button type="button" id="mergeBigBtn" class="ghost small" disabled>合并大票</button>
+              <button type="button" id="mergeStripBtn" class="ghost small" disabled>合并连票</button>
               <button type="button" id="splitBtn" class="ghost small" disabled>拆分</button>
-              <button type="button" id="resetRegionsBtn" class="ghost small">全部还原</button>
-            </div>
-            <div class="seg seg-hidden" id="regionKind">
-              <button class="seg-btn active" type="button" data-kind="big">大票</button>
-              <button class="seg-btn" type="button" data-kind="strip">连票</button>
+              <button type="button" id="resetRegionsBtn" class="ghost small">拆分全部</button>
             </div>
             <div class="region-picks" id="regionPicks" hidden>
               <div class="pick-strip" id="pickStrip"></div>
