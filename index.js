@@ -1763,6 +1763,9 @@ async function importScheme(file) {
     const v = scheme.settings[k];
     if (v !== null && v !== undefined) state[k] = v;
   }
+  // 方案文件早于本分支时没有 merges 键，上面的跳过空值逻辑会保留用户当前的区域布局，
+  // 得到一个既非存档、也非原布局的混合态：没有迁移路径，直接重置为逐格模式
+  if (!Array.isArray(scheme.settings.merges)) state.merges = [];
 
   // 2. 应用图片（与设置同源；缺失槽位则清空）
   const imgs = scheme.images || {};
