@@ -16,6 +16,7 @@
   --region-line: #3a4049;
   --region-merged-bg: #33404f;  /* 已合并区域 */
   --region-big-line: #6f8fb0;   /* 大票区域边框 */
+  --region-strip-line: #7c8b9e; /* 连票区域内部的格子分隔虚线 */
   --region-selected-bg: #4a6fa5;    /* 拖选中的格 */
   --region-selected-line: #7fa8d8;
   --region-selected-text: #ffffff;
@@ -341,10 +342,44 @@ button.stop-del:disabled { opacity: 0.35; cursor: not-allowed; }
   border: 1px solid var(--region-line);
   border-radius: 3px;
   cursor: pointer;
+  /* isolate：让下面 z-index:-1 的分隔线层停在本格内（压住底色、压在数字之下），
+     而不是逃到根堆叠上下文里被本格底色盖住 */
+  position: relative;
+  isolation: isolate;
 }
 .region-cell.merged { background: var(--region-merged-bg); color: var(--text); }
 .region-cell.big { border-style: solid; border-color: var(--region-big-line); }
 .region-cell.selected { border-style: dashed; background: var(--region-selected-bg); color: var(--region-selected-text); border-color: var(--region-selected-line); }
+/* 连票区域内部画出各格的分隔虚线：大票的内部齿孔被抹掉、本就是一整张，故只画连票。
+   ::before 竖线、::after 横线，各自用「实线渐变 + 另一轴的条纹遮罩」得到虚线；
+   周期取 100%/--cw（由 index.js 按区域跨度写入），整体左/上移 1px 把首条线藏进边框，
+   背景放大 1px 保证末条线正好落在边框外，于是只剩内部分隔线。 */
+.region-cell.merged:not(.big)::before,
+.region-cell.merged:not(.big)::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+.region-cell.merged:not(.big)::before {
+  background-image: repeating-linear-gradient(to right,
+    var(--region-strip-line) 0 1px, transparent 1px calc(100% / var(--cw)));
+  background-size: calc(100% + 1px) 100%;
+  background-position: -1px 0;
+  -webkit-mask-image: repeating-linear-gradient(to bottom, #000 0 3px, transparent 3px 6px);
+  mask-image: repeating-linear-gradient(to bottom, #000 0 3px, transparent 3px 6px);
+}
+.region-cell.merged:not(.big)::after {
+  background-image: repeating-linear-gradient(to bottom,
+    var(--region-strip-line) 0 1px, transparent 1px calc(100% / var(--ch)));
+  background-size: 100% calc(100% + 1px);
+  background-position: 0 -1px;
+  -webkit-mask-image: repeating-linear-gradient(to right, #000 0 3px, transparent 3px 6px);
+  mask-image: repeating-linear-gradient(to right, #000 0 3px, transparent 3px 6px);
+}
+.region-cell.selected { --region-strip-line: var(--region-selected-line); }
 /* 选中的大票区域：两者叠加时，底色仍表明「选中」，边框颜色改回大票的专属色以表明
    「大票」；边框样式显式声明为 dashed（与 .selected 一致），不依赖 .selected/.big
    两条同优先级规则谁写在后面 —— 只覆盖 border-color 时，border-style 仍会因两条规则

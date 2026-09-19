@@ -211,6 +211,18 @@ in `:root`. `.region-cell.selected.big` must re-declare `border-style` explicitl
 `.selected` tie on specificity, so overriding only `border-color` leaves the style decided by source
 order, and reordering the two rules silently flips a selected 大票 cell between dashed and solid.
 
+**Internal dividers mark a 连票**: a merged region that is *not* 大票 draws its constituent cells'
+boundaries as dashed lines (`.region-cell.merged:not(.big)::before/::after`, colour
+`--region-strip-line`, switched to the selected colour by a custom-property override on
+`.selected`), so 连票 is readable as "one region, still several stamps" against 大票's blank
+interior — which mirrors what the canvas does with the perforations. Each line layer is a
+`repeating-linear-gradient` of solid lines masked by a stripe pattern on the other axis; the period
+is `100% / var(--cw)` (resp. `--ch`), written per cell by `renderRegionGrid`, and the layer is
+shifted 1px left/up over a 1px-larger background so the first and last lines land on/outside the
+border and only the internal ones show. The pseudo-elements need `z-index: -1` **plus
+`isolation: isolate` on `.region-cell`** to sit above the cell's background but under its number —
+without the stacking context they escape to the root one and disappear behind that background.
+
 **Pointer handling**: `cellAt` maps a pointer position to a cell by dividing the grid's bounding rect
 into `X × Y` equal parts, ignoring `gap`; the resulting drift is bounded by `gap*(X-1)/X` (< 2px) so
 it never escapes the visual gutter, and the `clamp` covers the far edge. Capture is taken on the

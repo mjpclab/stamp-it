@@ -876,6 +876,9 @@ function renderRegionGrid(geo) {
       (g.cw * g.ch > 1 ? ' merged' : '') + (g.big ? ' big' : '');
     cell.style.gridColumn = (g.c0 + 1) + ' / span ' + g.cw;
     cell.style.gridRow = (g.r0 + 1) + ' / span ' + g.ch;
+    // 连票区域内部分隔虚线的周期（见 index.css 的 .region-cell.merged:not(.big)::before）
+    cell.style.setProperty('--cw', String(g.cw));
+    cell.style.setProperty('--ch', String(g.ch));
     cell.dataset.gi = String(i);
     cell.textContent = String(label(g, i));
     if (selection && g.c0 >= selection.c0 && g.c0 + g.cw <= selection.c0 + selection.cw &&
