@@ -151,6 +151,23 @@ function computeGroups(X, Y, merges) {
   return groups;
 }
 
+// 判断合并记录 m 的起点是否为 (c0, r0)：与 computeGroups 用同一套取整规则，
+// 否则手工写入 / 导入方案里的非整数坐标能正常落位显示，却永远匹配不上，拆分/大票开关会失灵。
+function mergeOriginMatches(m, c0, r0) {
+  return Math.round(m.c) === c0 && Math.round(m.r) === r0;
+}
+
+// 判断合并记录 m（取整后）是否与矩形 rect={c0,r0,cw,ch} 相交（半开区间，贴边不算相交）。
+// 用于合并前清场：即使 m 因越界/与更早的合并冲突而被 computeGroups 整条跳过、
+// 不出现在 geo.groups 里，它依然留在 state.merges 中 —— 只按「完全覆盖」过滤会漏掉
+// 这类不可见的合并，让它在之后抢先命中、悄悄吞掉用户刚建立的新合并。
+function mergeIntersectsRect(m, rect) {
+  const mc0 = Math.round(m.c), mr0 = Math.round(m.r);
+  const mc1 = mc0 + Math.round(m.w), mr1 = mr0 + Math.round(m.h);
+  const rc1 = rect.c0 + rect.cw, rr1 = rect.r0 + rect.ch;
+  return mc0 < rc1 && mc1 > rect.c0 && mr0 < rr1 && mr1 > rect.r0;
+}
+
 // 格 → 区域下标的查找表：命中测试每个拖拽帧都跑，必须 O(1)
 function cellGroupIndex(X, Y, groups) {
   const map = new Int32Array(X * Y);
@@ -184,10 +201,8 @@ function computeGeometry(s) {
   const Sh = s.ny * pitch;
   const X = Math.max(1, Math.round(s.matrixX));
   const Y = Math.max(1, Math.round(s.matrixY));
-  const spanX = clamp(Math.round(s.spanX), 1, X);   // 跨格单元不超过矩阵尺寸
-  const spanY = clamp(Math.round(s.spanY), 1, Y);
-  const groupsX = Math.ceil(X / spanX);             // 跨格组数；不整除时末列/末行为残组
-  const groupsY = Math.ceil(Y / spanY);
+  const groups = computeGroups(X, Y, s.merges);     // 跨格区域：合并区域 + 隐式 1×1，(r0,c0) 行优先
+  const cellGroup = cellGroupIndex(X, Y, groups);   // 格 → 区域下标，供命中测试 O(1) 查表
   const blockW = X * Sw;              // 整个矩阵块
   const blockH = Y * Sh;
   const half = s.d / 2;                          // 半孔基准
@@ -203,41 +218,38 @@ function computeGeometry(s) {
   const bg = Math.max(0, s.borderGap);           // 边框到图片的留白（像素）
   return {
     d: s.d, pitch, Sw, Sh, X, Y, blockW, blockH,
-    spanX, spanY, groupsX, groupsY,
+    groups, cellGroup,
     W: blockW + mL + mR, H: blockH + mT + mB,
     mT, mR, mB, mL, iT, iR, iB, iL, bw, bg,
     blockX: mL, blockY: mT,
   };
 }
 
-// 第 (gc,gr) 个跨格组占据的格范围；末组按矩阵边界收窄 → 残组
-function groupRect(geo, gc, gr) {
-  const c0 = gc * geo.spanX;
-  const r0 = gr * geo.spanY;
-  return { c0, r0, cw: Math.min(geo.spanX, geo.X - c0), ch: Math.min(geo.spanY, geo.Y - r0) };
+// 区域的整格矩形（不含内边距）：用于齿孔抑制判定
+function groupOuterRect(geo, g) {
+  return { x: geo.mL + g.c0 * geo.Sw, y: geo.mT + g.r0 * geo.Sh, w: g.cw * geo.Sw, h: g.ch * geo.Sh };
 }
 
-// 第 (gc,gr) 组的边框矩形（= 内边距内缘）：内边距只作用于组的外缘，组内相邻格贴合 → 画面连续（连票）
-function groupFrame(geo, gc, gr) {
-  const { c0, r0, cw, ch } = groupRect(geo, gc, gr);
+// 区域的边框矩形（= 内边距内缘）：内边距只作用于区域外缘，区域内相邻格贴合 → 画面连续（连票）
+function groupFrame(geo, g) {
   return {
-    x: geo.mL + c0 * geo.Sw + geo.iL,
-    y: geo.mT + r0 * geo.Sh + geo.iT,
-    w: cw * geo.Sw - geo.iL - geo.iR,
-    h: ch * geo.Sh - geo.iT - geo.iB,
+    x: geo.mL + g.c0 * geo.Sw + geo.iL,
+    y: geo.mT + g.r0 * geo.Sh + geo.iT,
+    w: g.cw * geo.Sw - geo.iL - geo.iR,
+    h: g.ch * geo.Sh - geo.iT - geo.iB,
   };
 }
 
-// 第 (gc,gr) 组的图片内容区：边框矩形再内缩「边框粗细 + 边框间距」
-function groupContent(geo, gc, gr) {
-  const f = groupFrame(geo, gc, gr);
+// 区域的图片内容区：边框矩形再内缩「边框粗细 + 边框间距」
+function groupContent(geo, g) {
+  const f = groupFrame(geo, g);
   const inset = geo.bw + geo.bg;
   return { x: f.x + inset, y: f.y + inset, w: f.w - 2 * inset, h: f.h - 2 * inset };
 }
 
-// 第 (gc,gr) 组用哪张图：组索引行优先重复填充
-function groupImage(geo, gc, gr) {
-  return state.images[(gr * geo.groupsX + gc) % state.images.length];
+// 第 i 个区域用哪张图：区域已按 (r0,c0) 行优先排序，故按下标重复填充
+function groupImage(i) {
+  return state.images[i % state.images.length];
 }
 
 function holeCenters(geo) {
@@ -283,15 +295,12 @@ function clampCropTo(crop, img, w, h) {
   crop.offsetY = clamp(crop.offsetY, -oy, oy);
 }
 
-// 钳制单组 crop 的 offset：保证该组图片铺满内容区
-function clampCropGroup(gc, gr) {
+// 钳制单个区域 crop 的 offset：保证该区域图片铺满内容区
+function clampCropGroup(geo, g, i) {
   if (!state.images.length) return;
-  const geo = computeGeometry(state);
-  const content = groupContent(geo, gc, gr);
+  const content = groupContent(geo, g);
   if (content.w <= 0 || content.h <= 0) return;   // 内边距过大挤没内容区时跳过钳制
-
-  const { c0, r0 } = groupRect(geo, gc, gr);
-  clampCropTo(groupCrop(c0, r0), groupImage(geo, gc, gr), content.w, content.h);
+  clampCropTo(groupCrop(g.c0, g.r0), groupImage(i), content.w, content.h);
 }
 
 // 钳制外背景图 crop：内容区为整张画布
@@ -311,12 +320,9 @@ function clampInnerCrop() {
 // 几何变化后重新钳制所有已编辑过的组
 function clampAllCrops() {
   const geo = computeGeometry(state);
-  for (let gr = 0; gr < geo.groupsY; gr++) {
-    for (let gc = 0; gc < geo.groupsX; gc++) {
-      const { c0, r0 } = groupRect(geo, gc, gr);
-      if (state.crops[c0 + ',' + r0]) clampCropGroup(gc, gr);
-    }
-  }
+  geo.groups.forEach((g, i) => {
+    if (state.crops[g.c0 + ',' + g.r0]) clampCropGroup(geo, g, i);
+  });
   clampOuterCrop();
   clampInnerCrop();
 }
@@ -430,33 +436,28 @@ function render(targetCtx, scale) {
   deco.setTransform(scale, 0, 0, scale, 0, 0);          // 恢复几何坐标绘制照片
   // 各跨格组照片：按组的行优先顺序重复填充，一张图铺满整组（组内跨格连续）
   if (s.images.length) {
-    for (let gr = 0; gr < geo.groupsY; gr++) {
-      for (let gc = 0; gc < geo.groupsX; gc++) {
-        const content = groupContent(geo, gc, gr);
-        if (content.w <= 0 || content.h <= 0) continue;   // 内边距挤没内容区
-        const img = groupImage(geo, gc, gr);
-        const { c0, r0 } = groupRect(geo, gc, gr);
-        deco.save();
-        deco.beginPath(); deco.rect(content.x, content.y, content.w, content.h); deco.clip();
-        const dr = imageDrawRect(img, content, getCrop(c0, r0));   // 每组独立 cover + 裁剪
-        deco.drawImage(img, dr.x, dr.y, dr.w, dr.h);
-        deco.restore();
-      }
-    }
+    geo.groups.forEach((g, i) => {
+      const content = groupContent(geo, g);
+      if (content.w <= 0 || content.h <= 0) return;   // 内边距挤没内容区
+      const img = groupImage(i);
+      deco.save();
+      deco.beginPath(); deco.rect(content.x, content.y, content.w, content.h); deco.clip();
+      const dr = imageDrawRect(img, content, getCrop(g.c0, g.r0));   // 每区域独立 cover + 裁剪
+      deco.drawImage(img, dr.x, dr.y, dr.w, dr.h);
+      deco.restore();
+    });
   }
-  // 各组边框：实线，贴内边距内缘向内画（图片已内缩「粗细 + 间距」，故不会被覆盖）
+  // 各区域边框：实线，贴内边距内缘向内画（图片已内缩「粗细 + 间距」，故不会被覆盖）
   if (geo.bw > 0 && s.borderOpacity > 0) {
     deco.save();
     deco.globalAlpha = s.borderOpacity;
     deco.strokeStyle = s.borderColor;
-    for (let gr = 0; gr < geo.groupsY; gr++) {
-      for (let gc = 0; gc < geo.groupsX; gc++) {
-        const f = groupFrame(geo, gc, gr);
-        if (f.w <= 0 || f.h <= 0) continue;              // 内边距挤没整个组
-        const t = Math.min(geo.bw, f.w / 2, f.h / 2);    // 过粗时退化为实心块，不越界
-        deco.lineWidth = t;
-        deco.strokeRect(f.x + t / 2, f.y + t / 2, f.w - t, f.h - t);
-      }
+    for (const g of geo.groups) {
+      const f = groupFrame(geo, g);
+      if (f.w <= 0 || f.h <= 0) continue;              // 内边距挤没整个区域
+      const t = Math.min(geo.bw, f.w / 2, f.h / 2);    // 过粗时退化为实心块，不越界
+      deco.lineWidth = t;
+      deco.strokeRect(f.x + t / 2, f.y + t / 2, f.w - t, f.h - t);
     }
     deco.restore();
   }
@@ -1177,11 +1178,18 @@ function eventToGeo(e, geo) {
   return clientToGeo(e.clientX, e.clientY, geo);
 }
 
-// 由几何坐标定位所在跨格组 {gc, gr}
+// 由几何坐标定位所在跨格区域的下标（O(1) 查表）
 function groupAt(geo, gx, gy) {
   const c = clamp(Math.floor((gx - geo.mL) / geo.Sw), 0, geo.X - 1);
   const r = clamp(Math.floor((gy - geo.mT) / geo.Sh), 0, geo.Y - 1);
-  return { gc: Math.floor(c / geo.spanX), gr: Math.floor(r / geo.spanY) };
+  return geo.cellGroup[r * geo.X + c];
+}
+
+// 目标记的是区域的起始格坐标 {c0, r0}，不是数组下标 —— 下标在区域列表增减、
+// 重排序后会失效或指向别的区域，起始格坐标是区域的稳定身份（同时也是裁剪的存储键）
+function groupTarget(geo, gx, gy) {
+  const g = geo.groups[groupAt(geo, gx, gy)];
+  return { type: 'group', c0: g.c0, r0: g.r0 };
 }
 
 // 命中目标：块外→外图；块内按 Alt / 是否有照片 → 内图或某跨格组；否则 null（不响应）
@@ -1197,10 +1205,10 @@ function hitTarget(geo, gx, gy, wantInner) {
                   gy >= geo.blockY && gy <= geo.blockY + geo.blockH;
   if (!inBlock) return state.outerImage ? { type: 'outer' } : null;
   if (forced === 'inner') return { type: 'inner' };
-  if (forced === 'photo') return { type: 'group', ...groupAt(geo, gx, gy) };
+  if (forced === 'photo') return groupTarget(geo, gx, gy);
 
   if (wantInner && state.innerImage) return { type: 'inner' };
-  if (state.images.length) return { type: 'group', ...groupAt(geo, gx, gy) };
+  if (state.images.length) return groupTarget(geo, gx, gy);
   return state.innerImage ? { type: 'inner' } : null;   // 无照片时块内直接调内图
 }
 
@@ -1222,12 +1230,23 @@ function cropContext(geo, t) {
       doClamp: clampInnerCrop,
     };
   }
-  const { c0, r0 } = groupRect(geo, t.gc, t.gr);
+  // 按起始格坐标重新查找区域，而非沿用手势开始时（pointerdown）捕获的下标：
+  // geo 每帧重新计算，区域列表可能在手势途中收缩（合并吞并了目标）或增长
+  // （拆分/全部还原），两种情况下数组下标都可能失效或悄悄指向别的区域 ——
+  // 起始格坐标是区域的稳定身份，找不到就说明该区域确实已不存在。
+  const gi = geo.groups.findIndex((cand) => cand.c0 === t.c0 && cand.r0 === t.r0);
+  const g = geo.groups[gi];
+  if (!g) {
+    // 目标区域已不存在（如被合并吞并）：退化为惰性空操作而不是抛错或误改到别的区域。
+    // img 为 null 让 zoomAt 直接短路，pan 分支写入的是一次性对象、不影响 state，
+    // 手势在下一次 pointerup 自然结束。
+    return { crop: { offsetX: 0, offsetY: 0, scale: 1 }, img: null, content: { x: 0, y: 0, w: 0, h: 0 }, doClamp: () => {} };
+  }
   return {
-    crop: groupCrop(c0, r0),
-    img: groupImage(geo, t.gc, t.gr),
-    content: groupContent(geo, t.gc, t.gr),
-    doClamp: () => clampCropGroup(t.gc, t.gr),
+    crop: groupCrop(g.c0, g.r0),
+    img: groupImage(gi),
+    content: groupContent(geo, g),
+    doClamp: () => clampCropGroup(geo, g, gi),
   };
 }
 
