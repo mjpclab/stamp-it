@@ -60,7 +60,11 @@
               <button class="seg-btn active" type="button" data-kind="big">大票</button>
               <button class="seg-btn" type="button" data-kind="strip">连票</button>
             </div>
-            <p class="hint">格内数字 = 该区域的填充顺序，照片按此顺序循环使用（照片数少于区域数时会重复）</p>
+            <div class="region-picks" id="regionPicks" hidden>
+              <div class="pick-strip" id="pickStrip"></div>
+              <button type="button" id="resetPicksBtn" class="ghost small" disabled>重置顺序</button>
+            </div>
+            <p class="hint">格内数字 = 该区域使用的照片序号（默认按顺序循环使用）。选中区域后点缩略图即可为它指定用图；「重置顺序」清掉全部指定，恢复按顺序循环</p>
           </div>
 
           <div class="tab-panel" id="tab-perf" hidden>
