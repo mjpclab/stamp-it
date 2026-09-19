@@ -96,17 +96,65 @@ This offscreen approach (not a single `destination-over` pass) is required so `o
 Inner and outer margin fills share one implementation, keyed by the prefix strings in `FILL_GROUPS` (`'inner'`, `'outer'`). Every state key and DOM id is `prefix + suffix` (`outerFill`, `outerStops`, `outerAngle`, `outerOriginX/Y`, `#outerColorRow`, `#outerStopsEditor`, …) — `els` entries are filled by looping `FILL_EL_SUFFIXES`, and `syncFillGroup`/`updateFillControlsVisibility`/`renderStopsEditor`/`bindFillGroup` all take the prefix. The **only** per-group difference is the gradient's reference rect in `FILL_RECTS`: inner = the matrix block, outer = the whole canvas. Adding a third fill group = one `FILL_RECTS` entry + the matching state keys, `PERSISTED` entries, and prefixed markup.
 
 ### Photos & per-region crop
-`state.images` is an array; region `i` in `geo.groups` (already sorted `(r0, c0)`) shows `images[i % len]` via `groupImage` (1 image→sheetlet, N→full sheet, repeating in that same row-major order). Crop (zoom/pan) is **per region**: `state.crops` is keyed by the region's **start cell** `"c0,r0"` → `{scale,offsetX,offsetY}`; `getCrop` reads (shared identity default), `groupCrop` lazily creates an editable one. Crop keys are the region's **start cell**, which stays unique under an irregular tiling and survives a clip (clipping shrinks `cw`/`ch`, never the origin), so crop data carries across layout changes untouched. Pointer drag / wheel-zoom (cursor-anchored) act only on the region under the cursor (`groupAt`, an O(1) lookup through `geo.cellGroup`); `clampCropGroup` keeps each image covering its region's content rect, `clampAllCrops` re-clamps after geometry changes.
+`state.images` is an array; region `i` in `geo.groups` (already sorted `(r0, c0)`) shows `images[i % len]` via `groupImage` (1 image→sheetlet, N→full sheet, repeating in that same row-major order), **unless the user pinned that region to a specific photo** — see Per-region photo choice below. Crop (zoom/pan) is **per region**: `state.crops` is keyed by the region's **start cell** `"c0,r0"` → `{scale,offsetX,offsetY}`; `getCrop` reads (shared identity default), `groupCrop` lazily creates an editable one. Crop keys are the region's **start cell**, which stays unique under an irregular tiling and survives a clip (clipping shrinks `cw`/`ch`, never the origin), so crop data carries across layout changes untouched. Pointer drag / wheel-zoom (cursor-anchored) act only on the region under the cursor (`groupAt`, an O(1) lookup through `geo.cellGroup`); `clampCropGroup` keeps each image covering its region's content rect, `clampAllCrops` re-clamps after geometry changes.
 
 **Drag-target identity.** `hitTarget`/`groupTarget` record a gesture's target as the region's **start cell** `{c0, r0}` — never an index into `geo.groups`. `cropContext` re-resolves the region by that origin on every frame (`geo.groups.findIndex`), because the region list is rebuilt each render and both grows (拆分, 全部还原) and reorders (inserting an earlier-sorting merge), so an index captured at `pointerdown` can silently come to name a different region a frame later. A target whose origin no longer exists (its region was absorbed by a merge) degrades `cropContext` to an inert no-op crop context rather than throwing or retargeting.
+
+**Per-region photo choice.** `state.picks` maps a region's **start cell** `"c0,r0"` → an index into
+`state.images`, and is deliberately the same shape and key as `state.crops` — same origin-based
+identity, same survives-a-clip property, same kept-not-pruned policy, same `PERSISTED` entry, same
+scheme export/import coverage. `validPick(c0, r0)` is the single accessor: it returns the pick only
+when it is an integer inside `[0, images.length)`, else `null`. Anything else — absent, corrupt (an
+imported scheme's `picks` object is *not* validated entry by entry, exactly like `merges`), or
+**out of range because the user loaded fewer photos** — makes `groupImageIndex(i, g)` fall back to
+the sequential `i % len`. As with `isValidMergeRecord`, the check lives inside the accessor so no
+caller has to remember it; every new reader of a single `picks` entry should go through `validPick`
+rather than test `!== undefined` itself. An out-of-range pick is *not* deleted, so it revives when
+the photos come back — the same policy as an orphaned crop key or an out-of-bounds merge. Loading a new photo set (`loadPhotos`) or clearing (`clearImage`) **does** reset `picks`
+alongside `crops`, because the old indices then name a different set of images. `importScheme`
+resets `state.picks = {}` when the imported settings carry no `picks` object, for the same reason it
+resets `merges` — no migration path from a pre-branch scheme.
 
 Editing regions (合并/拆分/均匀分块/全部还原) or resizing the matrix can orphan crop keys that are no longer region starts — they are **kept, not pruned** (same policy as `state.merges`, see Geometry), so reverting the edit revives them. Drag/zoom also retarget by cursor region: outside the matrix block → `outerImage`/`outerCrop`; inside → the region's photo, or the `innerImage`/`innerCrop` when Alt/Option is held (or when no photos are loaded) — see `hitTarget`/`cropContext`, and the drag-target lock under Responsive layout & touch for the touch-device path. A region clipped by the matrix edge has a different aspect ratio from an unclipped one, so the same looping image covers differently in each. Image **bytes** and their crops now persist across refresh (see Persistence).
 
 ### Region grid editor (矩阵 tab)
 The mini grid under the 连票宽×高 controls is a CSS Grid mirror of `geo.groups` — one `div` per
 region positioned with `grid-column/row: <start> / span <size>`, rebuilt by `renderRegionGrid`.
-Its cell numbers are the region's **fill order** (`i+1`), not a photo identity: the photo actually
-drawn is `images[i % len]`, so with fewer photos than regions the two diverge.
+Its cell numbers are the **photo actually drawn** there (`groupImageIndex(i, g) + 1`), so with fewer
+photos than regions the repeats are visible at a glance; with no photos loaded there is no image
+index and the number falls back to the fill order `i+1` (which is what the sequential rule would
+have produced anyway). That number is the *only* marker — a pinned region is deliberately **not**
+badged, because the number already says which photo it shows and that is the thing the user is
+choosing. (An earlier revision drew a corner dot for it; it was cut as noise. If something like it
+ever comes back, draw it with `::after` and **not** a border or text colour — `.merged`/`.big`/
+`.selected` already tie on specificity over both, and a fourth contender would be decided by source
+order; see the `.selected.big` note below.)
+
+**The 用图选择条** (`#regionPicks`, `renderPickStrip`) is one button per loaded photo inside the
+scrolling `#pickStrip`, plus a 重置顺序 button outside it. Clicking a thumbnail writes that index
+into `state.picks` for **every** region the selection covers; the highlight only lights up when the
+covered regions agree, so a mixed selection highlights nothing. Thumbnails are disabled, not hidden,
+when there is no selection — the box stays in layout either way.
+
+**There is deliberately no per-region 「自动」 button.** Un-pinning is a single global action
+(重置顺序 → `state.picks = {}`), and that is what keeps the
+highlight logic to one numeric comparison: with no 自动 档, "every covered region is unpinned" is no
+longer a state that has to win a highlight, so `uniform === Number(b.dataset.pick)` handles mixed,
+empty and all-unpinned selections alike (`undefined`/`null` never equal a number). Re-introducing a
+per-region 自动 brings back the `undefined` (all auto) vs `null` (mixed) distinction — don't, unless
+something actually needs it. 重置顺序 is enabled only when some **currently visible** region has a
+valid pick, so invisible leftovers (orphaned origins, out-of-range indices) leave it greyed out —
+they change nothing on screen, and blanking them would defeat the revive-on-undo policy above.
+Clicking it does clear those leftovers too, which is the intent of a global reset.
+
+Two details worth keeping: the wrapper uses the `hidden` attribute for the photos/no-photos switch
+(a one-shot mode switch, like the tabs — the `visibility` rule is for things that toggle off
+*selection* state), and each thumbnail is a small `<canvas>` drawn from the decoded `Image`,
+**never an `<img>` reusing `state.images[i].src`** — `loadPhotos`/`blobToImage` revoke the blob URL
+the moment the image decodes, so that address no longer resolves. `renderPickStrip` is called from
+`renderRegionGrid` **above** the `sig === lastRegionSig` early return, because the image list is not
+part of the signature (swapping in a different set of the same size would not change it); it dedups
+the thumbnail rebuild itself by comparing the `Image` objects.
 
 **The selection invariant is what makes editing safe.** `selection` (module-level, deliberately not
 persisted) is a cell rect, and `expandSelection(geo, sel)` grows it to the bounding box of every
@@ -162,7 +210,7 @@ Touch affordances: `input`/`select` go to `font-size: 16px` inside the query (be
 **Drag target lock** (`state.dragTarget`, in `PERSISTED`): the `.seg` control above the canvas forces gestures onto `photo` / `inner` / `outer`, since touch devices have no Alt key to reach `innerImage`. `'auto'` reproduces the original Alt/region-based inference exactly. A lock whose image is missing **falls back to `'auto'` rather than dead-ending** (`DRAG_TARGET_READY`), and the lock revives when the image comes back — which matters because `restoreImages()` populates images asynchronously after the first render. `updateDragTargetSeg()` is called from `renderPreview()` and guards its DOM writes with a signature string, since `renderPreview` runs every drag frame.
 
 ### Persistence
-`PERSISTED` keys (settings, crops — `crops`/`outerCrop`/`innerCrop` — and `merges`) are saved to `localStorage` under prefix `stampit_` (one key each, JSON) on every change and restored by `loadOptions()` at startup. `merges` rides in `PERSISTED`, so scheme export/import and `resetScheme` cover it for free. There is no migration from the pre-region format: `spanX`/`spanY` in an old saved state no longer affect geometry, so an old profile opens in per-cell mode until 均匀分块 is applied. The same no-migration rule applies to `importScheme`: a scheme file written before this branch carries no `merges` key, and since the importer otherwise skips keys absent from the file (leaving whatever the user currently has), it explicitly resets `state.merges = []` when the imported settings have no valid `merges` array, rather than silently keeping the current region layout. Image **bytes** are too big for localStorage, so the original `File` blobs go to **IndexedDB** (`idbOpen/idbPut/idbGet/idbDelete`, DB `stampit`, store `images`, keys `grid`/`outer`/`inner`). On startup, after the synchronous first render, `restoreImages()` async-reads the blobs, decodes via `blobToImage`, sets `state.images`/`outerImage`/`innerImage` (without resetting the already-restored crops), then re-renders. All IndexedDB ops fail silently → if IDB is unavailable the app degrades to no image-persistence (settings/crops still persist). Note: IndexedDB blob round-trips **stall under headless `--virtual-time-budget`**; verify image persistence over `http://localhost` driving real-time Chromium via CDP, not the virtual-time screenshot path.
+`PERSISTED` keys (settings, crops — `crops`/`outerCrop`/`innerCrop` — plus `merges` and `picks`) are saved to `localStorage` under prefix `stampit_` (one key each, JSON) on every change and restored by `loadOptions()` at startup. `merges` rides in `PERSISTED`, so scheme export/import and `resetScheme` cover it for free. There is no migration from the pre-region format: `spanX`/`spanY` in an old saved state no longer affect geometry, so an old profile opens in per-cell mode until 均匀分块 is applied. The same no-migration rule applies to `importScheme`: a scheme file written before this branch carries no `merges` key, and since the importer otherwise skips keys absent from the file (leaving whatever the user currently has), it explicitly resets `state.merges = []` when the imported settings have no valid `merges` array, rather than silently keeping the current region layout. Image **bytes** are too big for localStorage, so the original `File` blobs go to **IndexedDB** (`idbOpen/idbPut/idbGet/idbDelete`, DB `stampit`, store `images`, keys `grid`/`outer`/`inner`). On startup, after the synchronous first render, `restoreImages()` async-reads the blobs, decodes via `blobToImage`, sets `state.images`/`outerImage`/`innerImage` (without resetting the already-restored crops), then re-renders. All IndexedDB ops fail silently → if IDB is unavailable the app degrades to no image-persistence (settings/crops still persist). Note: IndexedDB blob round-trips **stall under headless `--virtual-time-budget`**; verify image persistence over `http://localhost` driving real-time Chromium via CDP, not the virtual-time screenshot path.
 
 ### PWA
 `manifest.webmanifest` + `sw.js` + `icon-192.png`/`icon-512.png`/`icon-maskable-512.png` (repo root, flat like everything else) make the app installable and fully offline-capable. `index.html` only adds a `theme-color` meta and the manifest/icon/`apple-touch-icon` links (iOS ignores manifest `icons`) — there is no inline script. Registration is `registerServiceWorker()` in `index.js`, called last in the 启动 block; it registers immediately (no `load` wait — by the time `index.js` runs, the three first-paint assets are already down, so precaching has no bandwidth to steal) and swallows the failure.
