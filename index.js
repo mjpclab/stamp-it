@@ -35,7 +35,7 @@ const PERSISTED = ['d', 'g', 'nx', 'ny', 'matrixX', 'matrixY', 'spanX', 'spanY',
   'borderWidth', 'borderGap', 'borderColor', 'borderOpacity',
   'innerColor', 'innerColorOpacity', 'innerImageOpacity', 'innerFill', 'innerStops', 'innerAngle', 'innerOriginX', 'innerOriginY',
   'exportScale', 'view', 'stampTab', 'layerTab', 'dragTarget',
-  'crops', 'outerCrop', 'innerCrop'];   // 裁剪元数据随选项落盘；图片本体走 IndexedDB
+  'crops', 'outerCrop', 'innerCrop', 'picks'];   // 裁剪/用图元数据随选项落盘；图片本体走 IndexedDB
 
 const state = {
   d: 8,
@@ -88,6 +88,7 @@ const state = {
   dragTarget: 'auto',
   images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
   crops: {},                // 每区域独立裁剪：键 "c0,r0"（区域起始格）→ {scale, offsetX, offsetY}
+  picks: {},                // 每区域指定用图：键 "c0,r0"（同 crops）→ images 下标；缺省 = 按顺序循环
   outerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 外背景图缩放/平移（session 态）
   innerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 内背景图缩放/平移（session 态）
 };
@@ -260,9 +261,24 @@ function groupContent(geo, g) {
   return { x: f.x + inset, y: f.y + inset, w: f.w - 2 * inset, h: f.h - 2 * inset };
 }
 
-// 第 i 个区域用哪张图：区域已按 (r0,c0) 行优先排序，故按下标重复填充
-function groupImage(i) {
-  return state.images[i % state.images.length];
+// 单条用图指定是否可用，可用则返回下标，否则 null。同 isValidMergeRecord：合法性判断放在
+// 读取该记录的函数内部，不要求调用方先自己判一遍 —— 否则总有一处会忘了判，导致界面显示
+// 与实际渲染各说各话。越界（图片变少）与损坏（方案导入未逐条校验）都归为不可用。
+function validPick(c0, r0) {
+  const p = state.picks[c0 + ',' + r0];
+  return Number.isInteger(p) && p >= 0 && p < state.images.length ? p : null;
+}
+
+// 第 i 个区域用哪张图（返回 images 下标）：优先取用户显式指定的，否则按区域的行优先顺序
+// 重复填充。不可用的指定只是回退，记录本身不删 —— 与孤儿裁剪键、越界 merges 同一政策，
+// 图片加回来后指定自动复活。
+function groupImageIndex(i, g) {
+  const p = validPick(g.c0, g.r0);
+  return p === null ? i % state.images.length : p;
+}
+
+function groupImage(i, g) {
+  return state.images[groupImageIndex(i, g)];
 }
 
 function holeCenters(geo) {
@@ -328,7 +344,7 @@ function clampCropGroup(geo, g, i) {
   if (!state.images.length) return;
   const content = groupContent(geo, g);
   if (content.w <= 0 || content.h <= 0) return;   // 内边距过大挤没内容区时跳过钳制
-  clampCropTo(groupCrop(g.c0, g.r0), groupImage(i), content.w, content.h);
+  clampCropTo(groupCrop(g.c0, g.r0), groupImage(i, g), content.w, content.h);
 }
 
 // 钳制外背景图 crop：内容区为整张画布
@@ -467,7 +483,7 @@ function render(targetCtx, scale) {
     geo.groups.forEach((g, i) => {
       const content = groupContent(geo, g);
       if (content.w <= 0 || content.h <= 0) return;   // 内边距挤没内容区
-      const img = groupImage(i);
+      const img = groupImage(i, g);
       deco.save();
       deco.beginPath(); deco.rect(content.x, content.y, content.w, content.h); deco.clip();
       const dr = imageDrawRect(img, content, getCrop(g.c0, g.r0));   // 每区域独立 cover + 裁剪
@@ -567,6 +583,9 @@ const els = {
   splitBtn: document.getElementById('splitBtn'),
   resetRegionsBtn: document.getElementById('resetRegionsBtn'),
   regionKind: document.getElementById('regionKind'),
+  regionPicks: document.getElementById('regionPicks'),
+  pickStrip: document.getElementById('pickStrip'),
+  resetPicksBtn: document.getElementById('resetPicksBtn'),
   baseColor: document.getElementById('baseColor'),
   baseOpacity: document.getElementById('baseOpacity'),
   baseOpacityVal: document.getElementById('baseOpacityVal'),
@@ -760,6 +779,64 @@ function expandSelection(geo, sel) {
 let lastRegionSig = '';
 let selection = null;   // 当前拖选范围 {c0,r0,cw,ch} | null，仅供编辑交互使用，不持久化
 
+// 选区覆盖的各区域的用图指定值；顺序与 regionsWithin 一致
+function coveredPickKeys(geo) {
+  if (!selection) return [];
+  return regionsWithin(geo.groups, selection).map((g) => g.c0 + ',' + g.r0);
+}
+
+const THUMB_PX = 88;     // 缩略图位图边长（40 CSS px 的 2 倍，兼顾高 DPR 清晰度）
+let lastPickImgs = [];   // 已建缩略图对应的 Image 列表，用于跳过无谓的重绘
+
+// 把 img 以 cover 方式画进一个方形缩略图 canvas。
+// 不能复用 Image 的 src 做 <img> —— blobToImage/loadPhotos 解码后立即 revoke 了 blob URL，
+// 那个地址已经取不到数据；但 Image 本身仍可绘制，所以直接画进 canvas。
+function makeThumb(img) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = THUMB_PX;
+  const c = cv.getContext('2d');
+  c.imageSmoothingQuality = 'high';
+  const side = Math.min(img.naturalWidth, img.naturalHeight);
+  c.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side,
+    0, 0, THUMB_PX, THUMB_PX);
+  return cv;
+}
+
+// 用图选择条：一张图一个缩略图按钮，点击把选区内每个区域都指定为该图。
+// 取消指定只有「重置顺序」一个全局入口（清空 state.picks），没有逐区域的「自动」档 ——
+// 于是「全部未指定」不再是一个需要高亮的档位，高亮判断塌缩成一次数值比较。
+function renderPickStrip(geo) {
+  const imgs = state.images;
+  els.regionPicks.hidden = imgs.length === 0;   // 有无照片是一次性模式切换，可以用 [hidden] 退出布局
+  if (!imgs.length) return;
+  const strip = els.pickStrip;
+
+  const same = imgs.length === lastPickImgs.length && imgs.every((im, k) => im === lastPickImgs[k]);
+  if (!same) {
+    lastPickImgs = imgs.slice();
+    strip.textContent = '';
+    imgs.forEach((im, idx) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'pick-thumb';
+      b.dataset.pick = String(idx);
+      b.title = '第 ' + (idx + 1) + ' 张';
+      b.appendChild(makeThumb(im));
+      strip.appendChild(b);
+    });
+  }
+
+  // 选区内各区域的指定值全都相同才高亮对应缩略图；混选、空选区、全部未指定都不高亮
+  const picked = coveredPickKeys(geo).map((k) => state.picks[k]);
+  const uniform = picked.length && picked.every((v) => v === picked[0]) ? picked[0] : null;
+  for (const b of strip.children) {
+    b.disabled = picked.length === 0;
+    b.classList.toggle('active', uniform === Number(b.dataset.pick));
+  }
+  // 只在确有生效中的指定时可点：损坏/越界的残留记录不该让按钮看起来有事可做
+  els.resetPicksBtn.disabled = !geo.groups.some((g) => validPick(g.c0, g.r0) !== null);
+}
+
 function renderRegionGrid(geo) {
   // 矩阵变小（或选区来自变动前的手势）可能让旧选区越界：整体丢弃而不是截断，
   // 因为截断会切开一个完整区域，破坏 expandSelection 保证的「整区域覆盖」不变式。
@@ -771,8 +848,11 @@ function renderRegionGrid(geo) {
   // 「选区始终整块覆盖区域」不变式；已稳定的选区扩张后值不变，不会打乱下面的签名去重
   if (selection) selection = expandSelection(geo, selection);
   const selSig = selection ? [selection.c0, selection.r0, selection.cw, selection.ch].join(',') : '-';
+  const hasImgs = state.images.length > 0;
+  // 每格显示的编号 = 该区域最终使用的照片序号；无照片时退回填充顺序（此时两者本就一致）
+  const label = (g, i) => (hasImgs ? groupImageIndex(i, g) : i) + 1;
   const sig = geo.X + 'x' + geo.Y + '|' + geo.Sw.toFixed(3) + 'x' + geo.Sh.toFixed(3) + '|' + selSig + '|' +
-    geo.groups.map((g) => [g.c0, g.r0, g.cw, g.ch, g.big ? 1 : 0].join(',')).join(';');
+    geo.groups.map((g, i) => [g.c0, g.r0, g.cw, g.ch, g.big ? 1 : 0, label(g, i)].join(',')).join(';');
 
   const grid = els.regionGrid;
   // 网格内容（数字标签）会让 width:auto 撑成内容自身的宽度而不是填满容器，
@@ -780,6 +860,9 @@ function renderRegionGrid(geo) {
   // 乘以宽高比得到宽度上限，宽高一起收缩、比例不失真。视口尺寸不进签名，每次都要重算。
   const ratio = (geo.X * geo.Sw) / (geo.Y * geo.Sh);
   grid.style.maxWidth = (window.innerHeight * 0.4 * ratio) + 'px';
+  // 选择条的缩略图依赖 state.images，而图片本体不进签名（换一批张数相同的图时签名可能
+  // 不变），所以和 maxWidth 一样放在提前返回之前；它自己按 Image 对象身份去重重建。
+  renderPickStrip(geo);
   if (sig === lastRegionSig) return;
   lastRegionSig = sig;
 
@@ -794,7 +877,7 @@ function renderRegionGrid(geo) {
     cell.style.gridColumn = (g.c0 + 1) + ' / span ' + g.cw;
     cell.style.gridRow = (g.r0 + 1) + ' / span ' + g.ch;
     cell.dataset.gi = String(i);
-    cell.textContent = String(i + 1);
+    cell.textContent = String(label(g, i));
     if (selection && g.c0 >= selection.c0 && g.c0 + g.cw <= selection.c0 + selection.cw &&
         g.r0 >= selection.r0 && g.r0 + g.ch <= selection.r0 + selection.ch) {
       cell.classList.add('selected');
@@ -909,6 +992,20 @@ function bindRegionGrid() {
     const m = state.merges.find((x) => mergeOriginMatches(x, selection.c0, selection.r0));
     if (!m) return;
     m.big = btn.dataset.kind === 'big';
+    applyRegions();
+  });
+
+  els.pickStrip.addEventListener('click', (e) => {
+    const btn = e.target.closest('.pick-thumb');
+    if (!btn || btn.disabled) return;
+    const keys = coveredPickKeys(computeGeometry(state));
+    if (!keys.length) return;
+    for (const k of keys) state.picks[k] = Number(btn.dataset.pick);
+    applyRegions();   // 换图后原裁剪未必还能铺满，交给 clampAllCrops 重新钳制
+  });
+
+  els.resetPicksBtn.addEventListener('click', () => {
+    state.picks = {};   // 全部回到按区域顺序循环填充
     applyRegions();
   });
 }
@@ -1203,7 +1300,8 @@ function loadPhotos(fileList) {
     els.imgInfo.textContent = ok.length === 1
       ? `${ok[0].file.name} (${ok[0].img.naturalWidth}×${ok[0].img.naturalHeight})`
       : `${ok.length} 张图片`;
-    state.crops = {};   // 新图重置所有裁剪；齿孔数由用户手动调整
+    state.crops = {};   // 新图重置所有裁剪与用图指定（旧下标指向的已是另一批图）
+    state.picks = {};
     idbPut('grid', { items: ok.map((p) => ({ blob: p.file, name: p.file.name })) });   // 持久化原始 Blob
     saveOptions();      // 用空 crops 覆盖旧持久值，避免残留
     renderPreview();
@@ -1213,6 +1311,7 @@ function loadPhotos(fileList) {
 function clearImage() {
   state.images = [];
   state.crops = {};
+  state.picks = {};
   els.fileInput.value = '';                       // 允许重新选择同一文件
   els.imgInfo.textContent = '未选择图片';
   idbDelete('grid');
@@ -1464,7 +1563,7 @@ function cropContext(geo, t) {
   }
   return {
     crop: groupCrop(g.c0, g.r0),
-    img: groupImage(gi),
+    img: groupImage(gi, g),
     content: groupContent(geo, g),
     doClamp: () => clampCropGroup(geo, g, gi),
   };
@@ -1770,6 +1869,8 @@ async function importScheme(file) {
   // 方案文件早于本分支时没有 merges 键，上面的跳过空值逻辑会保留用户当前的区域布局，
   // 得到一个既非存档、也非原布局的混合态：没有迁移路径，直接重置为逐格模式
   if (!Array.isArray(scheme.settings.merges)) state.merges = [];
+  // picks 同理：旧方案没有这个键，保留当前指定会让导入的照片顺序被上一套指定改写
+  if (!scheme.settings.picks || typeof scheme.settings.picks !== 'object') state.picks = {};
 
   // 2. 应用图片（与设置同源；缺失槽位则清空）
   const imgs = scheme.images || {};
@@ -1785,6 +1886,8 @@ async function importScheme(file) {
       : `${decoded.length} 张图片`;
     await idbPut('grid', { items: gridBlobs });
   } else {
+    // 这里不清 state.picks：它和图片来自同一个方案文件，本就是一致的一组数据，
+    // 清掉会把文件里显式写着的指定丢掉（clearImage 那边清是因为用户在换图，来源不同）
     state.images = [];
     els.imgInfo.textContent = '未选择图片';
     await idbDelete('grid');
