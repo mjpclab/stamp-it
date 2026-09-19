@@ -822,18 +822,17 @@ function bindRegionGrid() {
   const grid = els.regionGrid;
   let anchor = null;   // 拖选起点格 {c, r}
 
-  // 由指针位置反推格坐标：网格是 X 列 Y 行的等分 CSS Grid
-  const cellAt = (e) => {
-    const geo = computeGeometry(state);
+  // 由指针位置反推格坐标：网格是 X 列 Y 行的等分 CSS Grid。只要矩阵尺寸，不要几何。
+  const cellAt = (e, X, Y) => {
     const rect = grid.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
-    const c = clamp(Math.floor((e.clientX - rect.left) / rect.width * geo.X), 0, geo.X - 1);
-    const r = clamp(Math.floor((e.clientY - rect.top) / rect.height * geo.Y), 0, geo.Y - 1);
-    return { c, r };
+    return {
+      c: clamp(Math.floor((e.clientX - rect.left) / rect.width * X), 0, X - 1),
+      r: clamp(Math.floor((e.clientY - rect.top) / rect.height * Y), 0, Y - 1),
+    };
   };
 
-  const setSelection = (from, to) => {
-    const geo = computeGeometry(state);
+  const setSelection = (geo, from, to) => {
     selection = expandSelection(geo, {
       c0: Math.min(from.c, to.c), r0: Math.min(from.r, to.r),
       cw: Math.abs(from.c - to.c) + 1, ch: Math.abs(from.r - to.r) + 1,
@@ -841,17 +840,21 @@ function bindRegionGrid() {
     renderRegionGrid(geo);
   };
 
+  // 两个处理器各自只算一次几何往下传：computeGeometry 是 O(X*Y)（computeGroups +
+  // cellGroupIndex），拖选时每个 pointermove 都会跑，没必要重复。
   grid.addEventListener('pointerdown', (e) => {
-    const cell = cellAt(e);
+    const geo = computeGeometry(state);
+    const cell = cellAt(e, geo.X, geo.Y);
     if (!cell) return;
     anchor = cell;
     grid.setPointerCapture(e.pointerId);
-    setSelection(anchor, anchor);
+    setSelection(geo, anchor, anchor);
   });
   grid.addEventListener('pointermove', (e) => {
     if (!anchor) return;
-    const cell = cellAt(e);
-    if (cell) setSelection(anchor, cell);
+    const geo = computeGeometry(state);
+    const cell = cellAt(e, geo.X, geo.Y);
+    if (cell) setSelection(geo, anchor, cell);
   });
   const endDrag = (e) => {
     if (!anchor) return;
