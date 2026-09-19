@@ -256,15 +256,30 @@ function holeCenters(geo) {
   const out = [];
   const { mT, mL, pitch, Sw, Sh, X, Y } = geo;
   const nx = state.nx, ny = state.ny;
+  // 大票：抑制区域内部的齿孔，只保留外缘一圈。
+  // 用严格不等式 + EPS：边界上的孔全部保留，内部齿孔线的端点正落在边界上，故边缘无缺口。
+  // EPS 是必需的 —— 边界 y = mT + r0*(ny*pitch) 与孔位 y = mT + k*pitch 在
+  // k = r0*ny 时数学上相等，但浮点乘法不满足结合律，可能差一个 ULP。
+  const EPS = 1e-6;
+  const bigs = geo.groups.filter((g) => g.big).map((g) => groupOuterRect(geo, g));
+  const inside = (x, y) => bigs.some((R) =>
+    x > R.x + EPS && x < R.x + R.w - EPS && y > R.y + EPS && y < R.y + R.h - EPS);
+
   const vTotal = Y * ny;     // 全高 = blockH / pitch
   for (let c = 0; c <= X; c++) {            // 垂直齿孔线
     const x = mL + c * Sw;
-    for (let k = 0; k <= vTotal; k++) out.push({ x, y: mT + k * pitch });
+    for (let k = 0; k <= vTotal; k++) {
+      const y = mT + k * pitch;
+      if (!inside(x, y)) out.push({ x, y });
+    }
   }
   const hTotal = X * nx;     // 全宽 = blockW / pitch
   for (let r = 0; r <= Y; r++) {            // 水平齿孔线
     const y = mT + r * Sh;
-    for (let k = 0; k <= hTotal; k++) out.push({ x: mL + k * pitch, y });
+    for (let k = 0; k <= hTotal; k++) {
+      const x = mL + k * pitch;
+      if (!inside(x, y)) out.push({ x, y });
+    }
   }
   return out;
 }
