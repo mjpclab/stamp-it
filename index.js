@@ -859,7 +859,7 @@ function renderRegionGrid(geo) {
   // 于是改为显式换算 max-width：按视口高度算出与 CSS max-height:40dvh 相同的像素上限，
   // 乘以宽高比得到宽度上限，宽高一起收缩、比例不失真。视口尺寸不进签名，每次都要重算。
   const ratio = (geo.X * geo.Sw) / (geo.Y * geo.Sh);
-  grid.style.maxWidth = (window.innerHeight * 0.4 * ratio) + 'px';
+  grid.style.maxWidth = (window.innerHeight * 0.28 * ratio) + 'px';
   // 选择条的缩略图依赖 state.images，而图片本体不进签名（换一批张数相同的图时签名可能
   // 不变），所以和 maxWidth 一样放在提前返回之前；它自己按 Image 对象身份去重重建。
   renderPickStrip(geo);

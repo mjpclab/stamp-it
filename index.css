@@ -326,7 +326,7 @@ button.stop-del:disabled { opacity: 0.35; cursor: not-allowed; }
   display: grid;
   gap: 2px;
   width: 100%;
-  max-height: 40dvh;   /* 极端矩阵（如 1x12）不撑爆抽屉；实际收窄靠 index.js 按同一上限算出的 max-width */
+  max-height: 28dvh;   /* 极端矩阵（如 1x12）不撑爆抽屉；实际收窄靠 index.js 按同一上限算出的 max-width */
   margin: 8px auto;
   touch-action: none;           /* 触摸端拖选不被页面滚动抢走 */
   user-select: none;
