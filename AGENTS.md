@@ -199,8 +199,8 @@ clicking a merge button then deletes the region that was just created.
 
 **Sizing needs the JS half — the obvious CSS-only fix does not work.** `width: auto` + `max-height`
 shrink-wraps the grid to roughly 64×97px instead of filling the panel, because the cells' number
-labels give the `1fr` columns a non-zero min-content width. So the cap is split: `max-height: 40dvh`
-in `index.css`, plus a `max-width` computed in `renderRegionGrid` as `innerHeight * 0.4 * ratio` —
+labels give the `1fr` columns a non-zero min-content width. So the cap is split: `max-height: 28dvh`
+in `index.css`, plus a `max-width` computed in `renderRegionGrid` as `innerHeight * 0.28 * ratio` —
 the same cap expressed on the other axis, so width and height shrink together and the stamp aspect
 ratio survives. That `maxWidth` write sits **above** the `sig === lastRegionSig` early return on
 purpose: viewport height is not part of the signature, so it must be recomputed every call. Without
