@@ -87,6 +87,7 @@ const state = {
   // 触摸设备没有 Alt 键，锁定项是访问内背景图的唯一入口
   dragTarget: 'auto',
   images: [],               // 多图数组（session 态，不持久化）；按行优先顺序重复填充矩阵
+  imageMeta: [],            // 与 images 同序等长的来源文件记录 {blob, name, key}：去重靠 key，blob 供持久化/导出
   crops: {},                // 每区域独立裁剪：键 "c0,r0"（区域起始格）→ {scale, offsetX, offsetY}
   picks: {},                // 每区域指定用图：键 "c0,r0"（同 crops）→ images 下标；缺省 = 按顺序循环
   outerCrop: { scale: 1, offsetX: 0, offsetY: 0 },   // 外背景图缩放/平移（session 态）
@@ -1224,12 +1225,13 @@ async function restoreImages() {
     const [grid, outer, inner] = await Promise.all([idbGet('grid'), idbGet('outer'), idbGet('inner')]);
 
     if (grid && Array.isArray(grid.items) && grid.items.length) {
-      const imgs = (await Promise.all(grid.items.map((it) => blobToImage(it.blob)))).filter(Boolean);
-      if (imgs.length) {
-        state.images = imgs;
-        els.imgInfo.textContent = imgs.length === 1
-          ? `${grid.items[0].name} (${imgs[0].naturalWidth}×${imgs[0].naturalHeight})`
-          : `${imgs.length} 张图片`;
+      // 解码失败的条目整对丢弃，保证 images 与 imageMeta 同序等长
+      const ok = (await Promise.all(grid.items.map(async (it) => ({ it, img: await blobToImage(it.blob) }))))
+        .filter((p) => p.img);
+      if (ok.length) {
+        state.images = ok.map((p) => p.img);
+        state.imageMeta = ok.map((p) => ({ blob: p.it.blob, name: p.it.name, key: itemKey(p.it) }));
+        updateImgInfo();
       }
     }
     if (outer && outer.blob) {
@@ -1267,10 +1269,35 @@ function loadOptions() {
   } catch (_) { /* 读取失败时使用默认值 */ }
 }
 
-// 多图载入（多选 / 多文件拖放），按序存入 state.images
+// 图片去重标识：同名 + 同大小 + 同修改时间即视为同一张（只看 File 元数据，不读内容）。
+// 导入方案 / 早于本改动的持久化记录没有 lastModified，退化成 名字+大小。
+function photoKey(name, size, lastModified) {
+  return name + '|' + size + '|' + (lastModified || 0);
+}
+const fileItem = (f) => ({ blob: f, name: f.name, key: photoKey(f.name, f.size, f.lastModified) });
+const itemKey = (it) => it.key || photoKey(it.name, it.blob.size, it.blob.lastModified);
+
+// 图片信息栏：只报张数（单张也不显示文件名），附带本次跳过的重复张数
+function updateImgInfo(skipped = 0) {
+  const n = state.images.length;
+  els.imgInfo.textContent = (n ? `${n} 张图片` : '未选择图片') +
+    (skipped ? `（跳过 ${skipped} 张重复）` : '');
+}
+
+// 多图载入（多选 / 多文件拖放）：追加到已有图片之后，已在列表里的文件自动跳过。
+// 下标只增不改，所以 crops/picks 全部保留（换掉整批图才需要重置，那是 clearImage 的事）。
 function loadPhotos(fileList) {
-  const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'));
-  if (!files.length) return;
+  const incoming = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'));
+  const seen = new Set(state.imageMeta.map((it) => it.key));
+  const files = incoming.filter((f) => {
+    const key = photoKey(f.name, f.size, f.lastModified);
+    if (seen.has(key)) return false;
+    seen.add(key);   // 同一批里的重复也只留第一张
+    return true;
+  });
+  const skipped = incoming.length - files.length;
+  if (!files.length) { updateImgInfo(skipped); return; }
+
   els.imgInfo.textContent = '加载中…';
   Promise.all(files.map((f) => new Promise((res) => {
     const img = new Image();
@@ -1280,24 +1307,23 @@ function loadPhotos(fileList) {
   }))).then((pairs) => {
     const ok = pairs.filter((p) => p.img);   // 保留 文件↔图片 对齐，仅成功项
     if (!ok.length) { els.imgInfo.textContent = '图片加载失败'; return; }
-    state.images = ok.map((p) => p.img);
-    els.imgInfo.textContent = ok.length === 1
-      ? `${ok[0].file.name} (${ok[0].img.naturalWidth}×${ok[0].img.naturalHeight})`
-      : `${ok.length} 张图片`;
-    state.crops = {};   // 新图重置所有裁剪与用图指定（旧下标指向的已是另一批图）
-    state.picks = {};
-    idbPut('grid', { items: ok.map((p) => ({ blob: p.file, name: p.file.name })) });   // 持久化原始 Blob
-    saveOptions();      // 用空 crops 覆盖旧持久值，避免残留
+    state.images = state.images.concat(ok.map((p) => p.img));
+    state.imageMeta = state.imageMeta.concat(ok.map((p) => fileItem(p.file)));
+    updateImgInfo(skipped);
+    idbPut('grid', { items: state.imageMeta });   // 持久化原始 Blob（整表写回）
+    clampAllCrops();    // 张数变了 → i % len 变了，部分区域换了图，裁剪要重新钳制
+    saveOptions();
     renderPreview();
   });
 }
 
 function clearImage() {
   state.images = [];
+  state.imageMeta = [];
   state.crops = {};
   state.picks = {};
   els.fileInput.value = '';                       // 允许重新选择同一文件
-  els.imgInfo.textContent = '未选择图片';
+  updateImgInfo();
   idbDelete('grid');
   saveOptions();                                  // 持久化清空后的 crops
   renderPreview();
@@ -1370,7 +1396,10 @@ function bindMarginPads() {
 function bindControls() {
   els.pickBtn.addEventListener('click', () => els.fileInput.click());
   els.clearBtn.addEventListener('click', clearImage);
-  els.fileInput.addEventListener('change', (e) => loadPhotos(e.target.files));
+  els.fileInput.addEventListener('change', (e) => {
+    loadPhotos(e.target.files);
+    e.target.value = '';   // 允许再次选择同一文件（清空后重新加入）
+  });
   bindBgImagePicker(els.outerImgBtn, els.outerImgClear, els.outerImgInput, els.outerImgInfo, 'outerImage');
   bindBgImagePicker(els.innerImgBtn, els.innerImgClear, els.innerImgInput, els.innerImgInfo, 'innerImage');
 
@@ -1863,17 +1892,18 @@ async function importScheme(file) {
     .map((it) => ({ blob: dataUrlToBlob(it.dataUrl), name: it.name }))
     .filter((it) => it.blob);
   if (gridBlobs.length) {
-    const decoded = (await Promise.all(gridBlobs.map((it) => blobToImage(it.blob)))).filter(Boolean);
-    state.images = decoded;
-    els.imgInfo.textContent = decoded.length === 1
-      ? `${gridBlobs[0].name} (${decoded[0].naturalWidth}×${decoded[0].naturalHeight})`
-      : `${decoded.length} 张图片`;
-    await idbPut('grid', { items: gridBlobs });
+    const ok = (await Promise.all(gridBlobs.map(async (it) => ({ it, img: await blobToImage(it.blob) }))))
+      .filter((p) => p.img);
+    state.images = ok.map((p) => p.img);
+    state.imageMeta = ok.map((p) => ({ blob: p.it.blob, name: p.it.name, key: itemKey(p.it) }));
+    updateImgInfo();
+    await idbPut('grid', { items: state.imageMeta });
   } else {
     // 这里不清 state.picks：它和图片来自同一个方案文件，本就是一致的一组数据，
     // 清掉会把文件里显式写着的指定丢掉（clearImage 那边清是因为用户在换图，来源不同）
     state.images = [];
-    els.imgInfo.textContent = '未选择图片';
+    state.imageMeta = [];
+    updateImgInfo();
     await idbDelete('grid');
   }
   await applyImportedBg(imgs.outer, 'outerImage', 'outer', els.outerImgInfo);
@@ -1902,7 +1932,7 @@ async function resetScheme() {
   Object.assign(state, structuredClone(DEFAULTS));
 
   // 3. 复位图片信息与文件框
-  els.imgInfo.textContent = '未选择图片';
+  updateImgInfo();
   els.outerImgInfo.textContent = '无';
   els.innerImgInfo.textContent = '无';
   els.fileInput.value = '';
