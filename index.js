@@ -154,13 +154,6 @@ function computeGroups(X, Y, merges) {
   return groups;
 }
 
-// 判断合并记录 m 的起点是否为 (c0, r0)：与 computeGroups 用同一套取整规则，
-// 否则手工写入 / 导入方案里的非整数坐标能正常落位显示，却永远匹配不上，拆分/大票开关会失灵。
-// 对损坏记录（如 null）返回 false 而非抛错，本身即安全，调用方不必再各自判断合法性一遍。
-function mergeOriginMatches(m, c0, r0) {
-  return isValidMergeRecord(m) && Math.round(m.c) === c0 && Math.round(m.r) === r0;
-}
-
 // 判断合并记录 m（取整后）是否与矩形 rect={c0,r0,cw,ch} 相交（半开区间，贴边不算相交）。
 // 用于合并前清场：即使 m 因越界/与更早的合并冲突而被 computeGroups 整条跳过、
 // 不出现在 geo.groups 里，它依然留在 state.merges 中 —— 只按「完全覆盖」过滤会漏掉
@@ -892,11 +885,11 @@ function renderRegionGrid(geo) {
   // 按选区更新按钮可用状态。合并大票/合并连票对「已是单个跨格区域」的选区同样可用 ——
   // 同边界重新合并即切换该区域的档位，不再需要单独的大票/连票开关。
   const covered = selection ? regionsWithin(geo.groups, selection) : [];
-  const soleMerged = covered.length === 1 && covered[0].cw * covered[0].ch > 1;
+  const hasMerged = covered.some((g) => g.cw * g.ch > 1);
   const canMerge = !!selection && selection.cw * selection.ch > 1;
   els.mergeBigBtn.disabled = !canMerge;
   els.mergeStripBtn.disabled = !canMerge;
-  els.splitBtn.disabled = !soleMerged;
+  els.splitBtn.disabled = !hasMerged;
 }
 
 // 跨格区域网格的编辑交互：拖选 → 合并成大票 / 合并成连票 / 拆分。
@@ -974,7 +967,8 @@ function bindRegionGrid() {
   els.splitBtn.addEventListener('click', () => {
     if (!selection) return;
     const s = selection;
-    state.merges = state.merges.filter((m) => !mergeOriginMatches(m, s.c0, s.r0));
+    // 选区总是覆盖完整区域，按相交删除即可一次拆分其中所有合并（含被挤掉的不可见合并）
+    state.merges = state.merges.filter((m) => !mergeIntersectsRect(m, s));
     applyRegions();
   });
 
