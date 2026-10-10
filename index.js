@@ -797,8 +797,7 @@ function makeThumb(img) {
 }
 
 // 用图选择条：一张图一个缩略图按钮，点击把选区内每个区域都指定为该图。
-// 取消指定只有「重置顺序」一个全局入口（清空 state.picks），没有逐区域的「自动」档 ——
-// 于是「全部未指定」不再是一个需要高亮的档位，高亮判断塌缩成一次数值比较。
+// 取消指定只有「重置顺序」一个全局入口（清空 state.picks），没有逐区域的「自动」档。
 function renderPickStrip(geo) {
   const imgs = state.images;
   els.regionPicks.hidden = imgs.length === 0;   // 有无照片是一次性模式切换，可以用 [hidden] 退出布局
@@ -827,13 +826,15 @@ function renderPickStrip(geo) {
     });
   }
 
-  // 选区内各区域的指定值全都相同才高亮对应缩略图；混选、空选区、全部未指定都不高亮
-  const picked = coveredPickKeys(geo).map((k) => state.picks[k]);
-  const uniform = picked.length && picked.every((v) => v === picked[0]) ? picked[0] : null;
-  // 当前确实画在某个区域上的照片打勾（与区域网格的编号同源，都走 groupImageIndex）
-  const used = new Set(geo.groups.map((g, i) => groupImageIndex(i, g)));
+  // 高亮与打勾都按区域实际显示的照片（与区域网格的编号同源，都走 groupImageIndex），
+  // 不区分手动指定还是顺序填充：选区内各区域显示同一张才高亮它，混选、空选区不高亮
+  const shown = geo.groups.map((g, i) => groupImageIndex(i, g));
+  const covered = selection ? regionsWithin(geo.groups, selection) : [];
+  const inSel = covered.map((g) => shown[geo.cellGroup[g.r0 * geo.X + g.c0]]);
+  const uniform = inSel.length && inSel.every((v) => v === inSel[0]) ? inSel[0] : null;
+  const used = new Set(shown);
   for (const b of strip.children) {
-    b.disabled = picked.length === 0;
+    b.disabled = inSel.length === 0;
     b.classList.toggle('used', used.has(Number(b.dataset.pick)));
     b.classList.toggle('active', uniform === Number(b.dataset.pick));
   }
