@@ -156,19 +156,20 @@ flex-start` and 10px side padding with `flex: 1` and 4px — with the base paddi
 
 **The 用图选择条** (`#regionPicks`, `renderPickStrip`) is one button per loaded photo inside the
 scrolling `#pickStrip`, plus a 重置顺序 button outside it. Clicking a thumbnail writes that index
-into `state.picks` for **every** region the selection covers; the highlight only lights up when the
-covered regions agree, so a mixed selection highlights nothing. Each thumbnail carries its photo
+into `state.picks` for **every** region the selection covers. The highlight (`.active`) follows the
+photo each covered region **actually shows** (`groupImageIndex`), not `state.picks`: it lights up when
+every covered region shows the same photo, pinned or by the sequential fallback alike, so it always
+agrees with the grid numbers; a mixed selection highlights nothing. (It used to read `state.picks`
+directly, so an unpinned region never highlighted even though the grid showed its number — the
+rule was invisible because pinned regions carry no marker.) Each thumbnail carries its photo
 number (bottom-left, matching the grid cells' numbers) and a ✓ (top-right, class `.used`) when that
 photo is currently drawn on some region — computed from `groupImageIndex` over `geo.groups`, the same
 source as the grid numbers, so it reflects picks and the sequential fallback alike. Thumbnails are disabled, not hidden,
 when there is no selection — the box stays in layout either way.
 
 **There is deliberately no per-region 「自动」 button.** Un-pinning is a single global action
-(重置顺序 → `state.picks = {}`), and that is what keeps the
-highlight logic to one numeric comparison: with no 自动 档, "every covered region is unpinned" is no
-longer a state that has to win a highlight, so `uniform === Number(b.dataset.pick)` handles mixed,
-empty and all-unpinned selections alike (`undefined`/`null` never equal a number). Re-introducing a
-per-region 自动 brings back the `undefined` (all auto) vs `null` (mixed) distinction — don't, unless
+(重置顺序 → `state.picks = {}`); since the highlight shows the displayed photo rather than the pin,
+a per-region 自动 档 would have no highlight state of its own to show — don't reintroduce it unless
 something actually needs it. 重置顺序 is enabled only when some **currently visible** region has a
 valid pick, so invisible leftovers (orphaned origins, out-of-range indices) leave it greyed out —
 they change nothing on screen, and blanking them would defeat the revive-on-undo policy above.
