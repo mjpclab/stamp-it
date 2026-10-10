@@ -148,7 +148,9 @@ order; see the `.selected.big` note below.)
 only ever change `disabled`, never visibility, so the panel's scroll height is stable while dragging
 a selection. Both merge buttons are enabled whenever the selection spans more than one cell
 (including when it is already a single multi-cell region, which is how a region's 大票/连票 is
-switched); 拆分 needs the selection to be exactly one multi-cell region. They fit a 340px panel only
+switched); 拆分 is enabled when the selection covers at least one multi-cell region, and splits
+every merge intersecting the selection in one go (`mergeIntersectsRect`, same filter as the merge
+buttons — the selection invariant guarantees that only ever removes whole regions). They fit a 340px panel only
 because `.region-actions button.ghost.small` overrides `button.ghost.small`'s `align-self:
 flex-start` and 10px side padding with `flex: 1` and 4px — with the base padding the row wraps.
 
@@ -284,12 +286,12 @@ Touch affordances: `input`/`select` go to `font-size: 16px` inside the query (be
   silently discards a user's new merge.
 - **`computeGroups` is not the only consumer of `state.merges`.** The region-grid's 合并大票/
   合并连票/拆分 click handlers (`bindRegionGrid`) read `state.merges` directly. `mergeIntersectsRect(m,
-  rect)` and `mergeOriginMatches(m, c0, r0)` are safe by construction for a malformed entry
-  (e.g. `null` from a corrupted import): they call `isValidMergeRecord(m)` themselves and
+  rect)` is safe by construction for a malformed entry
+  (e.g. `null` from a corrupted import): it calls `isValidMergeRecord(m)` itself and
   return `false` rather than throwing, so **no caller needs to check validity before calling
-  them** — the click handlers just do `state.merges.filter((m) => !mergeIntersectsRect(m, s))`
-  etc., no `isValidMergeRecord` in sight. `computeGroups` still calls `isValidMergeRecord`
-  itself too, because it doesn't go through either helper (it reads `m.c`/`m.r`/`m.w`/`m.h`
+  it** — the click handlers just do `state.merges.filter((m) => !mergeIntersectsRect(m, s))`,
+  no `isValidMergeRecord` in sight. `computeGroups` still calls `isValidMergeRecord`
+  itself too, because it doesn't go through the helper (it reads `m.c`/`m.r`/`m.w`/`m.h`
   inline) and it needs to `continue` (skip the record), not get a boolean back. If you add a
   new function that reads a single merge record's fields, make it check `isValidMergeRecord`
   (or delegate to one that does) internally — don't push that requirement onto its callers,
