@@ -779,7 +779,7 @@ function coveredPickKeys(geo) {
   return regionsWithin(geo.groups, selection).map((g) => g.c0 + ',' + g.r0);
 }
 
-const THUMB_PX = 88;     // 缩略图位图边长（40 CSS px 的 2 倍，兼顾高 DPR 清晰度）
+const THUMB_PX = 112;    // 缩略图位图边长（56 CSS px 的 2 倍，兼顾高 DPR 清晰度）
 let lastPickImgs = [];   // 已建缩略图对应的 Image 列表，用于跳过无谓的重绘
 
 // 把 img 以 cover 方式画进一个方形缩略图 canvas。
@@ -816,6 +816,13 @@ function renderPickStrip(geo) {
       b.dataset.pick = String(idx);
       b.title = '第 ' + (idx + 1) + ' 张';
       b.appendChild(makeThumb(im));
+      const num = document.createElement('span');
+      num.className = 'pick-num';
+      num.textContent = String(idx + 1);
+      const check = document.createElement('span');
+      check.className = 'pick-check';
+      check.textContent = '✓';
+      b.append(num, check);
       strip.appendChild(b);
     });
   }
@@ -823,8 +830,11 @@ function renderPickStrip(geo) {
   // 选区内各区域的指定值全都相同才高亮对应缩略图；混选、空选区、全部未指定都不高亮
   const picked = coveredPickKeys(geo).map((k) => state.picks[k]);
   const uniform = picked.length && picked.every((v) => v === picked[0]) ? picked[0] : null;
+  // 当前确实画在某个区域上的照片打勾（与区域网格的编号同源，都走 groupImageIndex）
+  const used = new Set(geo.groups.map((g, i) => groupImageIndex(i, g)));
   for (const b of strip.children) {
     b.disabled = picked.length === 0;
+    b.classList.toggle('used', used.has(Number(b.dataset.pick)));
     b.classList.toggle('active', uniform === Number(b.dataset.pick));
   }
   // 只在确有生效中的指定时可点：损坏/越界的残留记录不该让按钮看起来有事可做

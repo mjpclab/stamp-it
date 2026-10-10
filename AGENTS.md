@@ -157,7 +157,10 @@ flex-start` and 10px side padding with `flex: 1` and 4px — with the base paddi
 **The 用图选择条** (`#regionPicks`, `renderPickStrip`) is one button per loaded photo inside the
 scrolling `#pickStrip`, plus a 重置顺序 button outside it. Clicking a thumbnail writes that index
 into `state.picks` for **every** region the selection covers; the highlight only lights up when the
-covered regions agree, so a mixed selection highlights nothing. Thumbnails are disabled, not hidden,
+covered regions agree, so a mixed selection highlights nothing. Each thumbnail carries its photo
+number (bottom-left, matching the grid cells' numbers) and a ✓ (top-right, class `.used`) when that
+photo is currently drawn on some region — computed from `groupImageIndex` over `geo.groups`, the same
+source as the grid numbers, so it reflects picks and the sequential fallback alike. Thumbnails are disabled, not hidden,
 when there is no selection — the box stays in layout either way.
 
 **There is deliberately no per-region 「自动」 button.** Un-pinning is a single global action
