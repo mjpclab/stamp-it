@@ -28,11 +28,13 @@ body {
   background: var(--bg);
   color: var(--text);
   /* Long-press while adjusting on touch devices should not start a text selection */
+  -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
 }
 
 input, textarea {
+  -webkit-user-select: text;
   user-select: text;
 }
 
