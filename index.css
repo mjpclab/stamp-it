@@ -27,6 +27,13 @@ body {
   font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   background: var(--bg);
   color: var(--text);
+  /* Long-press while adjusting on touch devices should not start a text selection */
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input, textarea {
+  user-select: text;
 }
 
 .app {
@@ -279,8 +286,6 @@ button.stop-del:disabled { opacity: 0.35; cursor: not-allowed; }
   gap: 16px;
   padding: 24px;
   overflow: hidden;         /* 滚动交给 .canvas-area，工具栏与提示行固定 */
-  user-select: none;        /* Dragging/pinching the stamp should not start a text selection */
-  -webkit-touch-callout: none;
 }
 
 /* 画布可视区：previewScale 直接实测本元素，故不必再猜面板宽度 */
